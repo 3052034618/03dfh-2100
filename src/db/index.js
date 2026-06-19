@@ -62,6 +62,7 @@ const initDatabase = async () => {
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_no TEXT UNIQUE NOT NULL,
+      store_key TEXT DEFAULT 'default',
       game_date TEXT NOT NULL,
       room TEXT NOT NULL,
       script_name TEXT NOT NULL,
@@ -82,6 +83,8 @@ const initDatabase = async () => {
     );
   `);
 
+  addColumnIfNotExists('orders', 'store_key TEXT DEFAULT "default"');
+
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,10 +98,12 @@ const initDatabase = async () => {
       status TEXT DEFAULT 'pending',
       read_at TEXT,
       confirmed INTEGER DEFAULT 0,
+      confirmed_at TEXT,
       channel TEXT,
       channel_target TEXT,
       send_result TEXT,
       send_attempts INTEGER DEFAULT 0,
+      last_error TEXT,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
     );
   `);
@@ -107,6 +112,27 @@ const initDatabase = async () => {
   addColumnIfNotExists('notifications', 'channel_target TEXT');
   addColumnIfNotExists('notifications', 'send_result TEXT');
   addColumnIfNotExists('notifications', 'send_attempts INTEGER DEFAULT 0');
+  addColumnIfNotExists('notifications', 'confirmed_at TEXT');
+  addColumnIfNotExists('notifications', 'last_error TEXT');
+
+  dbInstance.run(`
+    CREATE TABLE IF NOT EXISTS notification_send_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      notification_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      order_no TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL,
+      success INTEGER NOT NULL DEFAULT 0,
+      channel TEXT,
+      channel_target TEXT,
+      result_text TEXT,
+      error_message TEXT,
+      sent_at TEXT NOT NULL,
+      FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+    );
+  `);
+
+  addColumnIfNotExists('notification_send_logs', 'error_message TEXT');
 
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS exceptions (

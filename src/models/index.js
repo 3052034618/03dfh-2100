@@ -131,14 +131,14 @@ const OrderModel = {
     const orderNo = generateOrderNo();
     run(`
       INSERT INTO orders (
-        order_no, game_date, room, script_name, player_count,
+        order_no, store_key, game_date, room, script_name, player_count,
         main_player_name, main_player_phone, dm_name, dm_phone,
         front_desk_contact, front_desk_phone, additional_services,
         newbie_ratio, status, cake_confirmed, decoration_confirmed,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      orderNo, data.game_date, data.room, data.script_name, data.player_count,
+      orderNo, data.store_key || 'default', data.game_date, data.room, data.script_name, data.player_count,
       data.main_player_name, data.main_player_phone || null, data.dm_name, data.dm_phone || null,
       data.front_desk_contact, data.front_desk_phone || null, data.additional_services || null,
       data.newbie_ratio || null, 'pending', data.cake_confirmed || 0, data.decoration_confirmed || 0,
@@ -152,7 +152,7 @@ const OrderModel = {
     const fields = [];
     const values = [];
     const allowedFields = [
-      'game_date', 'room', 'script_name', 'player_count',
+      'store_key', 'game_date', 'room', 'script_name', 'player_count',
       'main_player_name', 'main_player_phone', 'dm_name', 'dm_phone',
       'front_desk_contact', 'front_desk_phone', 'additional_services',
       'newbie_ratio', 'status', 'cake_confirmed', 'decoration_confirmed'
@@ -173,6 +173,7 @@ const OrderModel = {
   delete(id) {
     run('DELETE FROM orders WHERE id = ?', [id]);
     run('DELETE FROM notifications WHERE order_id = ?', [id]);
+    run('DELETE FROM notification_send_logs WHERE order_id = ?', [id]);
     run('DELETE FROM exceptions WHERE order_id = ?', [id]);
     run('DELETE FROM exception_handlers WHERE order_id = ?', [id]);
     return { changes: 1 };
@@ -186,12 +187,13 @@ const OrderModel = {
     return get('SELECT * FROM orders WHERE order_no = ?', [orderNo]);
   },
 
-  list({ status, startDate, endDate, page = 1, pageSize = 20 } = {}) {
+  list({ status, startDate, endDate, storeKey, page = 1, pageSize = 20 } = {}) {
     const conditions = [];
     const values = [];
     if (status) { conditions.push('status = ?'); values.push(status); }
     if (startDate) { conditions.push('game_date >= ?'); values.push(startDate); }
     if (endDate) { conditions.push('game_date <= ?'); values.push(endDate); }
+    if (storeKey) { conditions.push('store_key = ?'); values.push(storeKey); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const countRow = get(`SELECT COUNT(*) as total FROM orders ${where}`, values);
     const total = countRow ? countRow.total : 0;
@@ -213,6 +215,22 @@ const OrderModel = {
     );
   },
 
+  getByDateAndStore(date, storeKey) {
+    const startOfDay = dayjs(date).format('YYYY-MM-DD 00:00:00');
+    const endOfDay = dayjs(date).format('YYYY-MM-DD 23:59:59');
+    const conditions = ['game_date >= ?', 'game_date <= ?'];
+    const values = [startOfDay, endOfDay];
+    if (storeKey) {
+      conditions.push('store_key = ?');
+      values.push(storeKey);
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    return all(
+      `SELECT * FROM orders ${where} ORDER BY game_date ASC`,
+      values
+    );
+  },
+
   getTimeline(id) {
     const order = this.getById(id);
     if (!order) return null;
@@ -224,17 +242,21 @@ const OrderModel = {
       type_label: '订单创建',
       title: '订单创建',
       content: `订单号 ${order.order_no} 已录入，剧本《${order.script_name}》${order.game_date} 在 ${order.room} 开场`,
-      operator: order.front_desk_contact
+      operator: order.front_desk_contact,
+      icon: '🟢'
     });
 
-    events.push({
-      time: order.updated_at,
-      type: 'order_updated',
-      type_label: '订单更新',
-      title: '订单信息更新',
-      content: `玩家 ${order.player_count} 人，主角 ${order.main_player_name}，DM：${order.dm_name}`,
-      operator: order.front_desk_contact
-    });
+    if (order.updated_at && order.updated_at !== order.created_at) {
+      events.push({
+        time: order.updated_at,
+        type: 'order_updated',
+        type_label: '订单更新',
+        title: '订单信息更新',
+        content: `玩家 ${order.player_count} 人，主角 ${order.main_player_name}，DM：${order.dm_name}`,
+        operator: order.front_desk_contact,
+        icon: '🟢'
+      });
+    }
 
     const notifications = NotificationModel.getByOrderId(id);
     for (const n of notifications) {
@@ -244,27 +266,48 @@ const OrderModel = {
         one_hour_before: '开场前1小时提醒',
         exception_escalation: '异常超时升级提醒'
       }[n.type] || n.type;
-      const channelLabel = { wecom: '企业微信', sms: '短信', console: '控制台' }[n.channel] || n.channel;
+      const channelLabel = { wecom: '企业微信', sms: '短信', dingtalk: '钉钉', console: '控制台' }[n.channel] || n.channel;
 
       events.push({
         time: n.scheduled_time,
         type: 'notification_scheduled',
         type_label: `${typeLabel}-计划`,
         title: `${typeLabel}（${n.role}）`,
-        content: `计划通过 ${channelLabel || '默认渠道'} 发送`,
-        operator: '系统'
+        content: `计划通过 ${channelLabel || '默认渠道'} 发送至 ${n.channel_target || '-'}`,
+        operator: '系统',
+        icon: '🔵'
       });
 
-      if (n.sent_time) {
+      if (n.send_logs && n.send_logs.length > 0) {
+        for (const log of n.send_logs) {
+          const logChannelLabel = { wecom: '企业微信', sms: '短信', dingtalk: '钉钉', console: '控制台' }[log.channel] || log.channel;
+          const statusLabel = log.success ? '发送成功' : '发送失败';
+          const detail = log.success
+            ? `第 ${log.attempt_no} 次发送：${statusLabel}，渠道：${logChannelLabel}，结果：${log.result_text || 'OK'}`
+            : `第 ${log.attempt_no} 次发送：${statusLabel}，渠道：${logChannelLabel}，原因：${log.error_message || log.result_text || '未知'}`;
+          events.push({
+            time: log.sent_at,
+            type: log.success ? 'notification_sent' : 'notification_send_failed',
+            type_label: `${typeLabel}-${log.success ? '已发送' : '发送失败'}`,
+            title: `${typeLabel} ${statusLabel}（第${log.attempt_no}次）`,
+            content: detail,
+            operator: '系统',
+            meta: { attempt: log.attempt_no, log_id: log.id },
+            icon: log.success ? '🔵' : '🟡'
+          });
+        }
+      } else if (n.sent_time) {
         events.push({
           time: n.sent_time,
           type: 'notification_sent',
           type_label: `${typeLabel}-已发送`,
           title: `${typeLabel} 已发送（${n.role}）`,
           content: `通过 ${channelLabel || n.channel} 发送，发送结果：${n.send_result || '成功'}`,
-          operator: '系统'
+          operator: '系统',
+          icon: '🔵'
         });
       }
+
       if (n.read_at) {
         events.push({
           time: n.read_at,
@@ -272,17 +315,23 @@ const OrderModel = {
           type_label: `${typeLabel}-已读`,
           title: `${n.role} 已读提醒`,
           content: n.send_result || '已确认接收',
-          operator: n.role
+          operator: n.role,
+          icon: '🔵'
         });
       }
-      if (n.confirmed) {
+
+      if (n.confirmed && n.confirmed_at) {
+        const confirmDetail = n.role === '前台'
+          ? '前台已确认核对：蛋糕和布置物料已核对确认'
+          : `${n.role} 已确认收到并按要求准备`;
         events.push({
-          time: n.read_at || n.sent_time || n.scheduled_time,
+          time: n.confirmed_at,
           type: 'notification_confirmed',
           type_label: `${typeLabel}-已确认`,
           title: `${n.role} 确认了提醒`,
-          content: n.role === '前台' ? '蛋糕和布置物料已核对确认' : '已确认收到并按要求准备',
-          operator: n.role
+          content: confirmDetail,
+          operator: n.role,
+          icon: '🔵'
         });
       }
     }
@@ -304,7 +353,8 @@ const OrderModel = {
         title: `异常上报：${EXCEPTION_TYPE_LABELS[e.type] || e.type}`,
         content: e.description,
         operator: e.reporter,
-        meta: { exception_id: e.id, assignee: e.assignee, deadline: e.deadline }
+        meta: { exception_id: e.id, assignee: e.assignee, deadline: e.deadline },
+        icon: '🔴'
       });
       const handlers = ExceptionHandlerModel.getByExceptionId(e.id);
       for (const h of handlers) {
@@ -322,7 +372,8 @@ const OrderModel = {
           title: `异常处理：${actionLabel}`,
           content: `处理人：${h.handled_by}\n处理结果：${h.resolution || '（无）'}\n备注：${h.remark}`,
           operator: h.handled_by,
-          meta: { handler_id: h.id, exception_id: e.id }
+          meta: { handler_id: h.id, exception_id: e.id },
+          icon: '🔴'
         });
       }
       if (e.escalated && e.escalated_at) {
@@ -332,14 +383,15 @@ const OrderModel = {
           type_label: '异常超时升级',
           title: '异常处理超时，已升级至店长',
           content: `原处理时限 ${e.deadline}，异常内容：${e.description}`,
-          operator: '系统'
+          operator: '系统',
+          icon: '🔴'
         });
       }
     }
 
     events.sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf());
     events.forEach((e, idx) => { e.seq = idx + 1; });
-    return { order, timeline: events };
+    return { order, total_events: events.length, timeline: events };
   }
 };
 
@@ -360,15 +412,17 @@ const NotificationModel = {
   },
 
   getById(id) {
-    return get('SELECT * FROM notifications WHERE id = ?', [id]);
+    const n = get('SELECT * FROM notifications WHERE id = ?', [id]);
+    if (n) n.send_logs = NotificationSendLogModel.getByNotificationId(id);
+    return n;
   },
 
   update(id, data) {
     const fields = [];
     const values = [];
     const allowedFields = [
-      'status', 'sent_time', 'read_at', 'confirmed',
-      'channel', 'channel_target', 'send_result'
+      'status', 'sent_time', 'read_at', 'confirmed', 'confirmed_at',
+      'channel', 'channel_target', 'send_result', 'last_error'
     ];
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
@@ -385,14 +439,29 @@ const NotificationModel = {
     return this.getById(id);
   },
 
-  recordSendResult(id, success, resultText, channelType, channelTarget) {
+  recordSendResult(id, success, resultText, channelType, channelTarget, errorMsg) {
     const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    const notif = this.getById(id);
+    const attemptNo = (notif ? notif.send_attempts : 0) + 1;
+    NotificationSendLogModel.create({
+      notification_id: id,
+      order_id: notif ? notif.order_id : null,
+      order_no: notif ? notif.order_no : null,
+      attempt_no: attemptNo,
+      success: success ? 1 : 0,
+      channel: channelType,
+      channel_target: channelTarget,
+      result_text: resultText,
+      error_message: errorMsg || null,
+      sent_at: now
+    });
     return this.update(id, {
       status: success ? 'sent' : 'failed',
       sent_time: now,
       send_result: resultText,
       channel: channelType,
       channel_target: channelTarget,
+      last_error: success ? null : (errorMsg || resultText),
       send_attempts: 1
     });
   },
@@ -406,24 +475,33 @@ const NotificationModel = {
   },
 
   getByOrderId(orderId) {
-    return all(
+    const list = all(
       `SELECT * FROM notifications WHERE order_id = ? ORDER BY scheduled_time ASC`,
       [orderId]
     );
+    return list.map(n => {
+      n.send_logs = NotificationSendLogModel.getByNotificationId(n.id);
+      return n;
+    });
   },
 
-  list({ orderId, status, role, page = 1, pageSize = 50 } = {}) {
+  list({ orderId, status, role, storeKey, page = 1, pageSize = 50 } = {}) {
     const conditions = [];
     const values = [];
-    if (orderId) { conditions.push('order_id = ?'); values.push(orderId); }
-    if (status) { conditions.push('status = ?'); values.push(status); }
-    if (role) { conditions.push('role = ?'); values.push(role); }
+    if (orderId) { conditions.push('n.order_id = ?'); values.push(orderId); }
+    if (status) { conditions.push('n.status = ?'); values.push(status); }
+    if (role) { conditions.push('n.role = ?'); values.push(role); }
+    if (storeKey) {
+      conditions.push('o.store_key = ?');
+      values.push(storeKey);
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const countRow = get(`SELECT COUNT(*) as total FROM notifications ${where}`, values);
+    const join = storeKey ? 'JOIN orders o ON o.id = n.order_id' : '';
+    const countRow = get(`SELECT COUNT(*) as total FROM notifications n ${join} ${where}`, values);
     const total = countRow ? countRow.total : 0;
     const offset = (page - 1) * pageSize;
     const list = all(
-      `SELECT * FROM notifications ${where} ORDER BY scheduled_time DESC LIMIT ? OFFSET ?`,
+      `SELECT n.* FROM notifications n ${join} ${where} ORDER BY n.scheduled_time DESC LIMIT ? OFFSET ?`,
       [...values, pageSize, offset]
     );
     return { total, page, pageSize, list };
@@ -431,11 +509,53 @@ const NotificationModel = {
 
   deleteByOrderId(orderId) {
     run('DELETE FROM notifications WHERE order_id = ?', [orderId]);
+    run('DELETE FROM notification_send_logs WHERE order_id = ?', [orderId]);
     return { changes: 1 };
   },
 
+  markAsRead(id) {
+    const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    return this.update(id, { read_at: now });
+  },
+
   markConfirmed(id) {
-    return this.update(id, { confirmed: 1 });
+    const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    return this.update(id, { confirmed: 1, confirmed_at: now });
+  }
+};
+
+const NotificationSendLogModel = {
+  create(data) {
+    run(`
+      INSERT INTO notification_send_logs (
+        notification_id, order_id, order_no, attempt_no,
+        success, channel, channel_target, result_text, error_message, sent_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      data.notification_id, data.order_id, data.order_no, data.attempt_no,
+      data.success || 0, data.channel || null, data.channel_target || null,
+      data.result_text || null, data.error_message || null, data.sent_at
+    ]);
+    const row = get('SELECT MAX(id) as max_id FROM notification_send_logs');
+    return this.getById(row ? row.max_id : null);
+  },
+
+  getById(id) {
+    return get('SELECT * FROM notification_send_logs WHERE id = ?', [id]);
+  },
+
+  getByNotificationId(notificationId) {
+    return all(
+      `SELECT * FROM notification_send_logs WHERE notification_id = ? ORDER BY sent_at ASC`,
+      [notificationId]
+    );
+  },
+
+  getByOrderId(orderId) {
+    return all(
+      `SELECT * FROM notification_send_logs WHERE order_id = ? ORDER BY sent_at ASC`,
+      [orderId]
+    );
   }
 };
 
@@ -590,17 +710,20 @@ const ExceptionModel = {
     );
   },
 
-  list({ orderId, status, page = 1, pageSize = 50 } = {}) {
+  list({ orderId, status, assignee, storeKey, page = 1, pageSize = 50 } = {}) {
     const conditions = [];
     const values = [];
-    if (orderId) { conditions.push('order_id = ?'); values.push(orderId); }
-    if (status) { conditions.push('status = ?'); values.push(status); }
+    const join = storeKey ? 'JOIN orders o ON o.id = e.order_id' : '';
+    if (orderId) { conditions.push('e.order_id = ?'); values.push(orderId); }
+    if (status) { conditions.push('e.status = ?'); values.push(status); }
+    if (assignee) { conditions.push('e.assignee = ?'); values.push(assignee); }
+    if (storeKey) { conditions.push('o.store_key = ?'); values.push(storeKey); }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const countRow = get(`SELECT COUNT(*) as total FROM exceptions ${where}`, values);
+    const countRow = get(`SELECT COUNT(*) as total FROM exceptions e ${join} ${where}`, values);
     const total = countRow ? countRow.total : 0;
     const offset = (page - 1) * pageSize;
     const list = all(
-      `SELECT * FROM exceptions ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT e.* FROM exceptions e ${join} ${where} ORDER BY e.created_at DESC LIMIT ? OFFSET ?`,
       [...values, pageSize, offset]
     );
     const withHandlers = list.map(e => ({
@@ -608,6 +731,27 @@ const ExceptionModel = {
       handlers: ExceptionHandlerModel.getByExceptionId(e.id)
     }));
     return { total, page, pageSize, list: withHandlers };
+  },
+
+  getByDateAndStore(date, storeKey) {
+    const startOfDay = dayjs(date).format('YYYY-MM-DD 00:00:00');
+    const endOfDay = dayjs(date).format('YYYY-MM-DD 23:59:59');
+    const conditions = ['e.created_at >= ?', 'e.created_at <= ?'];
+    const values = [startOfDay, endOfDay];
+    if (storeKey) {
+      conditions.push('o.store_key = ?');
+      values.push(storeKey);
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const join = 'JOIN orders o ON o.id = e.order_id';
+    const list = all(
+      `SELECT e.* FROM exceptions e ${join} ${where} ORDER BY e.created_at ASC`,
+      values
+    );
+    return list.map(e => ({
+      ...e,
+      handlers: ExceptionHandlerModel.getByExceptionId(e.id)
+    }));
   },
 
   getByOrderId(orderId) {
@@ -626,6 +770,7 @@ module.exports = {
   StoreConfigModel,
   OrderModel,
   NotificationModel,
+  NotificationSendLogModel,
   ExceptionModel,
   ExceptionHandlerModel
 };

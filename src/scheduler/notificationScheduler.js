@@ -10,8 +10,9 @@ class NotificationScheduler {
   }
 
   async dispatchNotification(notification) {
-    const channelInfo = StoreConfigModel.getChannelForRole(notification.role, 'default');
     const order = OrderModel.getById(notification.order_id);
+    const storeKey = order ? order.store_key : 'default';
+    const channelInfo = StoreConfigModel.getChannelForRole(notification.role, storeKey);
     let target = channelInfo.target;
     if (notification.role === '顾客' && order) {
       target = order.main_player_phone || target;
@@ -23,7 +24,7 @@ class NotificationScheduler {
     const timestamp = dayjs().format('YYYY-MM-DD HH:mm:ss');
     console.log('\n' + '='.repeat(70));
     console.log(`[推送通知] ${timestamp}`);
-    console.log(`  订单号: ${notification.order_no} | 通知ID: ${notification.id}`);
+    console.log(`  门店: ${storeKey} | 订单号: ${notification.order_no} | 通知ID: ${notification.id}`);
     console.log(`  类型: ${notification.type} | 角色: ${notification.role}`);
     console.log(`  渠道: ${channelInfo.type} | 目标: ${target}`);
     console.log(`  计划时间: ${notification.scheduled_time}`);
@@ -43,7 +44,8 @@ class NotificationScheduler {
         channel: channelInfo.type,
         target: target,
         result: err.message,
-        description: `发送异常: ${err.message}`
+        description: `发送异常: ${err.message}`,
+        error: err.message
       };
     }
     NotificationModel.recordSendResult(
@@ -51,7 +53,8 @@ class NotificationScheduler {
       sendResult.success,
       sendResult.description,
       sendResult.channel,
-      sendResult.target
+      sendResult.target,
+      sendResult.success ? null : (sendResult.error || sendResult.description)
     );
     console.log(`  发送结果: ${sendResult.success ? '✅ 成功' : '❌ 失败'}`);
     console.log(`  结果描述: ${sendResult.description}`);

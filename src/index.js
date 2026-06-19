@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
   res.json({
     code: 200,
     message: '剧本杀生日包场通知服务',
-    version: '2.0.0',
+    version: '2.1.0',
     endpoints: {
       orders: '/api/orders',
       notifications: '/api/notifications',
@@ -37,28 +37,30 @@ app.get('/', (req, res) => {
         'PUT    /api/store-configs/:key': '更新门店配置（渠道、负责人、时限）',
         'DELETE /api/store-configs/:key': '删除门店配置',
         'GET    /api/store-configs/channels': '支持的通知渠道列表',
-        'GET    /api/store-configs/:key/preview?role=前台|DM|顾客|店长': '预览某角色的渠道配置'
+        'GET    /api/store-configs/:key/preview?role=前台|DM|顾客|店长': '预览某角色的渠道配置',
+        'GET    /api/store-configs/:key/dashboard?date=YYYY-MM-DD': '门店当日运营看板（订单/待发/未确认/异常/超时）'
       },
       orders: {
-        'POST   /api/orders': '创建生日包场订单（自动按角色匹配渠道生成3条提醒）',
-        'GET    /api/orders': '订单列表（支持 status/startDate/endDate/page/pageSize 参数）',
-        'GET    /api/orders/:id': '查询订单详情（含通知、异常、处理历史）',
-        'GET    /api/orders/:id/timeline': '完整服务时间线（订单+提醒+确认+异常+处理）',
+        'POST   /api/orders': '创建生日包场订单（支持 store_key，自动按门店渠道生成3条提醒）',
+        'GET    /api/orders': '订单列表（支持 storeKey/status/startDate/endDate/page/pageSize 参数）',
+        'GET    /api/orders/:id': '查询订单详情（含通知+发送日志+异常+处理历史）',
+        'GET    /api/orders/:id/timeline': '完整服务时间线（订单+提醒发送/已读/确认+异常+处理，真实时间）',
         'PUT    /api/orders/:id': '更新订单信息（改开场时间自动重算提醒）',
         'DELETE /api/orders/:id': '删除订单',
         'POST   /api/orders/:id/confirm': '确认物料（body: { item: "cake"|"decoration", confirmed: true|false }）'
       },
       notifications: {
-        'GET    /api/notifications': '通知列表（支持 orderId/status/role/page/pageSize 参数）',
-        'GET    /api/notifications/:id': '查询通知详情（含 send_result、send_attempts、channel）',
+        'GET    /api/notifications': '通知列表（支持 storeKey/orderId/status/role/page/pageSize 参数）',
+        'GET    /api/notifications/:id': '查询通知详情（含 send_logs 发送日志、send_attempts、last_error）',
         'POST   /api/notifications/:id/read': '标记为已读',
-        'POST   /api/notifications/:id/confirm': '确认通知，前台角色可同步确认蛋糕/布置物料',
-        'POST   /api/notifications/:id/send': '手动立即发送通知（按角色匹配渠道，返回发送结果）'
+        'POST   /api/notifications/:id/confirm': '确认通知（记录 confirmed_at 真实时间），前台可同步确认物料',
+        'POST   /api/notifications/:id/send': '手动立即发送通知（按门店渠道匹配，返回发送结果）',
+        'POST   /api/notifications/:id/retry': '手动重试发送（失败通知专用，每次结果写入 send_logs）'
       },
       exceptions: {
         'GET    /api/exceptions/types': '获取异常类型、处理选项、默认处理时限',
         'POST   /api/exceptions': '上报异常（自动分配负责人和处理时限，不同类型时限不同）',
-        'GET    /api/exceptions': '异常列表（支持 orderId/status/assignee/page/pageSize 参数，含 is_overdue 标记）',
+        'GET    /api/exceptions': '异常列表（支持 storeKey/orderId/status/assignee/page/pageSize 参数，含 is_overdue 标记）',
         'GET    /api/exceptions/:id': '查询异常详情（含处理历史、负责人、时限、超时标记）',
         'POST   /api/exceptions/:id/assign': '重新分配负责人及处理时限',
         'POST   /api/exceptions/:id/handle': '处理异常（resolution 处理结果 + remark 备注均为必填）'

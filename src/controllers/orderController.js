@@ -24,6 +24,7 @@ const validateOrderData = (data) => {
 
 const createNotificationsForOrder = (order) => {
   const gameDate = dayjs(order.game_date);
+  const storeKey = order.store_key || 'default';
   const notifications = [];
   const defs = [
     {
@@ -48,7 +49,7 @@ const createNotificationsForOrder = (order) => {
   for (const def of defs) {
     const scheduled = def.timeFn();
     if (scheduled.isAfter(dayjs())) {
-      const channelInfo = StoreConfigModel.getChannelForRole(def.role, 'default');
+      const channelInfo = StoreConfigModel.getChannelForRole(def.role, storeKey);
       let target = channelInfo.target;
       if (def.role === '顾客') target = order.main_player_phone || target;
       if (def.role === '前台') target = order.front_desk_contact + (order.front_desk_phone ? `(${order.front_desk_phone})` : '');
@@ -130,6 +131,7 @@ module.exports = {
       data: {
         order_summary: {
           order_no: result.order.order_no,
+          store_key: result.order.store_key,
           script_name: result.order.script_name,
           room: result.order.room,
           game_date: result.order.game_date,
@@ -140,7 +142,7 @@ module.exports = {
           cake_confirmed: result.order.cake_confirmed,
           decoration_confirmed: result.order.decoration_confirmed
         },
-        total_events: result.timeline.length,
+        total_events: result.total_events,
         timeline: result.timeline
       }
     });
@@ -181,9 +183,9 @@ module.exports = {
   },
 
   listOrders: (req, res) => {
-    const { status, startDate, endDate, page, pageSize } = req.query;
+    const { status, startDate, endDate, storeKey, page, pageSize } = req.query;
     const result = OrderModel.list({
-      status, startDate, endDate,
+      status, startDate, endDate, storeKey,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 20
     });

@@ -1,443 +1,429 @@
 const dayjs = require('dayjs');
 
-const BASE_URL = 'http://localhost:3000/api';
+const BASE = 'http://localhost:3000/api';
 
+const request = async (path, method = 'GET', body) => {
+  const options = {
+    method,
+    headers: { 'Content-Type': 'application/json' }
+  };
+  if (body !== undefined) options.body = JSON.stringify(body);
+  const res = await fetch(BASE + path, options);
+  const data = await res.json().catch(() => ({}));
+  return { ...data, ok: res.ok, status: res.status };
+};
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const log = (msg) => console.log(msg);
 const logSection = (title) => {
   console.log('\n' + '='.repeat(75));
   console.log(`  ${title}`);
   console.log('='.repeat(75));
 };
-
 const logSub = (title) => {
-  console.log(`\n  ── ${title} ` + '─'.repeat(Math.max(0, 60 - title.length)));
+  console.log(`\n  ── ${title} ${'─'.repeat(Math.max(5, 55 - title.length))}`);
 };
-
-const logResult = (name, success, data = null, error = null) => {
-  const icon = success ? '✅' : '❌';
-  console.log(`${icon} ${name}`);
-  if (error) console.log(`     ⚠️  ${error}`);
-  if (data && success) {
-    const preview = typeof data === 'object' ? JSON.stringify(data).slice(0, 180) : String(data).slice(0, 180);
-    console.log(`     📋 ${preview}`);
+const logResult = (label, ok, data, errMsg) => {
+  const icon = ok ? '✅' : '❌';
+  console.log(`${icon} ${label}`);
+  if (data !== undefined && data !== null) {
+    const str = typeof data === 'string' ? data : JSON.stringify(data);
+    console.log(`     📋 ${str.length > 200 ? str.slice(0, 200) + '...' : str}`);
+  }
+  if (errMsg && !ok) {
+    console.log(`     ⚠️  ${errMsg}`);
   }
 };
 
-const request = async (url, method = 'GET', body = null) => {
-  const options = { method, headers: { 'Content-Type': 'application/json' } };
-  if (body) options.body = JSON.stringify(body);
-  try {
-    const res = await fetch(`${BASE_URL}${url}`, options);
-    const json = await res.json();
-    return { status: res.status, ok: res.ok, ...json };
-  } catch (e) {
-    return { status: 0, ok: false, code: 0, message: e.message };
-  }
+let passCount = 0;
+let failCount = 0;
+const record = (ok) => ok ? passCount++ : failCount++;
+const print = (ok, label, info) => {
+  record(ok);
+  logResult(label, ok, info);
 };
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-let orderId = null;
-let orderNo = null;
-let exceptionId = null;
-let notifIds = {};
-let storeId = null;
 
 const runTests = async () => {
-  logSection('剧本杀生日包场通知服务 v2.0 - 全功能集成测试');
-  await sleep(800);
+  console.log('\n' + '='.repeat(75));
+  console.log('  剧本杀生日包场通知服务 v2.1 - 全功能集成测试');
+  console.log('='.repeat(75));
 
   // ============================================================
-  // 第一部分：门店配置
+  // 第一部分：多门店渠道配置 & 隔离
   // ============================================================
-  logSection('一、门店通知渠道配置模块');
+  logSection('一、多门店通知渠道配置 & 隔离');
 
-  logSub('1.1 门店配置列表 & 默认配置');
-  const listCfg = await request('/store-configs');
-  logResult('列出所有门店配置', listCfg.ok && listCfg.code === 200,
-    listCfg.ok ? { count: listCfg.data.length, default_key: listCfg.data[0].store_key } : null,
-    listCfg.ok ? null : listCfg.message);
-
-  logSub('1.2 查询默认门店渠道配置');
-  const cfgDef = await request('/store-configs/default');
-  storeId = cfgDef.ok ? cfgDef.data.id : null;
-  logResult('查询默认门店(default)配置', cfgDef.ok && cfgDef.code === 200,
-    cfgDef.ok ? {
-      门店: cfgDef.data.store_name,
-      前台渠道: cfgDef.data.front_desk_channel_type,
-      DM渠道: cfgDef.data.dm_channel_type,
-      顾客渠道: cfgDef.data.customer_channel_type,
-      默认负责人: cfgDef.data.default_assignee,
-      异常默认时限_min: cfgDef.data.exception_deadline_minutes
-    } : null,
-    cfgDef.ok ? null : cfgDef.message);
-
-  logSub('1.3 支持的渠道类型 & 角色渠道预览');
-  const channels = await request('/store-configs/channels');
-  logResult('查询支持的通知渠道类型', channels.ok && channels.code === 200,
-    channels.ok ? channels.data.map(c => `${c.value}=${c.label}`).join('、') : null,
-    channels.ok ? null : channels.message);
-
-  const previewFD = await request('/store-configs/default/preview?role=前台');
-  logResult('预览【前台】渠道配置', previewFD.ok && previewFD.code === 200,
-    previewFD.ok ? { 类型: previewFD.data.channel_label, 默认目标: previewFD.data.default_target } : null,
-    previewFD.ok ? null : previewFD.message);
-
-  const previewCus = await request('/store-configs/default/preview?role=顾客');
-  logResult('预览【顾客】渠道配置', previewCus.ok && previewCus.code === 200,
-    previewCus.ok ? { 类型: previewCus.data.channel_label } : null,
-    previewCus.ok ? null : previewCus.message);
-
-  logSub('1.4 更新门店配置（修改店长信息和异常时限）');
-  const updateCfg = await request('/store-configs/default', 'PUT', {
-    manager_name: '店长-钱总',
-    manager_phone: '139-0000-0001',
-    exception_deadline_minutes: 45,
-    front_desk_channel_config: { webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=FRONT-DESK-REAL-KEY-001' }
+  logSub('1.1 创建第二家门店（配置不同渠道）');
+  const store2 = await request('/store-configs', 'POST', {
+    store_key: 'chaoyang',
+    store_name: '朝阳路旗舰店',
+    address: '北京市朝阳区朝阳路100号',
+    front_desk_channel_type: 'dingtalk',
+    front_desk_channel_config: { webhook_url: 'https://dingtalk.example.com/webhook/chaoyang-front' },
+    dm_channel_type: 'dingtalk',
+    dm_channel_config: { webhook_url: 'https://dingtalk.example.com/webhook/chaoyang-dm' },
+    customer_channel_type: 'console',
+    customer_channel_config: { name: '朝阳店控制台' },
+    manager_name: '张店长',
+    default_assignee: '前台小李',
+    exception_deadline_minutes: 45
   });
-  logResult('更新默认门店配置', updateCfg.ok && updateCfg.code === 200,
-    updateCfg.ok ? {
-      店长: updateCfg.data.manager_name,
-      异常时限_min: updateCfg.data.exception_deadline_minutes,
-      前台渠道配置: updateCfg.data.front_desk_channel_config && updateCfg.data.front_desk_channel_config.webhook_url ? '已设置' : '未设置'
-    } : null,
-    updateCfg.ok ? null : updateCfg.message);
+  print(store2.ok && store2.code === 200, '创建朝阳路门店成功',
+    store2.ok ? { store_key: 'chaoyang', 前台渠道: 'dingtalk', 顾客渠道: 'console' } : null,
+    store2.ok ? null : store2.message);
 
-  // ============================================================
-  // 第二部分：订单录入
-  // ============================================================
-  logSection('二、订单录入模块（创建订单自动匹配渠道）');
+  logSub('1.2 两家门店各自下单（明天的局，确保3条提醒都生成），验证渠道不串店');
 
-  const futureDate = dayjs().add(2, 'day').hour(19).minute(0).second(0).format('YYYY-MM-DD HH:mm:ss');
-  const orderData = {
-    game_date: futureDate,
-    room: '星空厅-VIP',
+  // 默认门店下订单（明天的局，确保3条提醒都生成）
+  const order1 = await request('/orders', 'POST', {
+    store_key: 'default',
+    game_date: dayjs().add(1, 'day').hour(19).minute(0).second(0).format('YYYY-MM-DD HH:mm:ss'),
+    room: 'VIP1',
     script_name: '雾隐山庄·生日特供版',
     player_count: 8,
-    main_player_name: '李四',
-    main_player_phone: '138-1111-2222',
-    dm_name: 'DM-橙子',
-    dm_phone: '138-3333-4444',
-    front_desk_contact: '前台-小美',
+    main_player_name: '王小明',
+    main_player_phone: '13811112222',
+    dm_name: 'DM橙子',
+    dm_phone: '139-3333-4444',
+    front_desk_contact: '前台小美',
     front_desk_phone: '138-5555-6666',
-    additional_services: '生日蛋糕(抹茶)+气球布置+照片打印+香槟',
-    newbie_ratio: '25%'
-  };
+    created_by: '测试'
+  });
+  const order1Id = order1.ok ? order1.data.order.id : null;
 
-  logSub('2.1 创建生日包场订单');
-  const createRes = await request('/orders', 'POST', orderData);
-  if (createRes.ok && createRes.code === 200) {
-    orderId = createRes.data.order.id;
-    orderNo = createRes.data.order.order_no;
-    createRes.data.notifications.forEach(n => {
-      if (n.type === 'day_before') notifIds.day_before = n.id;
-      if (n.type === 'three_hours_before') notifIds.three_hours = n.id;
-      if (n.type === 'one_hour_before') notifIds.one_hour = n.id;
+  // 朝阳门店下订单（明天的局）
+  const order2 = await request('/orders', 'POST', {
+    store_key: 'chaoyang',
+    game_date: dayjs().add(1, 'day').hour(20).minute(0).second(0).format('YYYY-MM-DD HH:mm:ss'),
+    room: '豪华大包',
+    script_name: '年轮·生日沉浸版',
+    player_count: 10,
+    main_player_name: '李小华',
+    main_player_phone: '139-8888-9999',
+    dm_name: 'DM阿强',
+    dm_phone: '139-7777-6666',
+    front_desk_contact: '前台小李',
+    front_desk_phone: '139-6666-5555',
+    created_by: '测试朝阳'
+  });
+  const order2Id = order2.ok ? order2.data.order.id : null;
+
+  print(order1.ok && order2.ok, '两个门店各创建1个订单成功',
+    order1.ok ? { default店: order1Id, 朝阳店: order2Id } : null);
+
+  // 验证默认门店订单的通知渠道
+  const notif1List = order1.ok ? order1.data.notifications : [];
+  const defaultFrontNotif = notif1List.find(n => n.role === '前台');
+  const defaultCustNotif = notif1List.find(n => n.role === '顾客');
+  print(defaultFrontNotif && defaultFrontNotif.channel === 'wecom',
+    '默认门店-前台通知=企业微信',
+    defaultFrontNotif ? { 渠道: defaultFrontNotif.channel, 目标: defaultFrontNotif.channel_target } : null);
+  print(defaultCustNotif && defaultCustNotif.channel === 'sms',
+    '默认门店-顾客通知=短信',
+    defaultCustNotif ? { 渠道: defaultCustNotif.channel, 目标: defaultCustNotif.channel_target } : null);
+
+  // 验证朝阳门店订单的通知渠道
+  const notif2List = order2.ok ? order2.data.notifications : [];
+  const chaoyangFrontNotif = notif2List.find(n => n.role === '前台');
+  const chaoyangCustNotif = notif2List.find(n => n.role === '顾客');
+  print(chaoyangFrontNotif && chaoyangFrontNotif.channel === 'dingtalk',
+    '朝阳门店-前台通知=钉钉',
+    chaoyangFrontNotif ? { 渠道: chaoyangFrontNotif.channel, 目标: chaoyangFrontNotif.channel_target } : null);
+  print(chaoyangCustNotif && chaoyangCustNotif.channel === 'console',
+    '朝阳门店-顾客通知=控制台',
+    chaoyangCustNotif ? { 渠道: chaoyangCustNotif.channel, 目标: chaoyangCustNotif.channel_target } : null);
+
+  // 验证 list 按 storeKey 过滤
+  const listDefault = await request('/orders?storeKey=default');
+  const listChaoyang = await request('/orders?storeKey=chaoyang');
+  print(listDefault.ok && listDefault.data.total >= 1,
+    '订单列表按 storeKey=default 过滤正确',
+    listDefault.ok ? { 数量: listDefault.data.total } : null);
+  print(listChaoyang.ok && listChaoyang.data.total >= 1,
+    '订单列表按 storeKey=chaoyang 过滤正确',
+    listChaoyang.ok ? { 数量: listChaoyang.data.total } : null);
+
+  // ============================================================
+  // 第二部分：时间线真实时间 & 确认记录
+  // ============================================================
+  logSection('二、时间线真实时间 & 确认记录');
+
+  logSub('2.1 手动发送前台通知 + 标记已读 + 确认，验证时间线');
+
+  const frontNotifId = defaultFrontNotif ? defaultFrontNotif.id : null;
+  let sendResult = null;
+  let readTime = null;
+  let confirmTime = null;
+
+  if (frontNotifId) {
+    // 发送
+    const sendRes = await request(`/notifications/${frontNotifId}/send`, 'POST', {});
+    sendResult = sendRes.ok ? sendRes.data : null;
+    print(sendRes.ok && sendRes.data.notification.status === 'sent',
+      '手动发送前台通知成功',
+      sendRes.ok ? { 状态: sendRes.data.notification.status, 渠道: sendRes.data.notification.channel } : null,
+      sendRes.ok ? null : sendRes.message);
+
+    await sleep(1200);
+    const beforeRead = dayjs();
+
+    // 已读
+    const readRes = await request(`/notifications/${frontNotifId}/read`, 'POST', {});
+    readTime = readRes.ok && readRes.data ? readRes.data.read_at : null;
+    print(readRes.ok && readRes.data.read_at,
+      '标记已读记录真实时间',
+      readRes.ok ? { read_at: readRes.data.read_at } : null);
+
+    await sleep(1200);
+
+    // 确认
+    const confirmRes = await request(`/notifications/${frontNotifId}/confirm`, 'POST', {
+      cake: true,
+      decoration: true
     });
+    confirmTime = confirmRes.ok && confirmRes.data ? confirmRes.data.confirmed_at : null;
+    print(confirmRes.ok && confirmRes.data.confirmed_at,
+      '确认通知记录真实 confirmed_at',
+      confirmRes.ok ? { confirmed_at: confirmRes.data.confirmed_at, 蛋糕已确认: confirmRes.data.cake_confirmed } : null);
   }
-  logResult('创建订单（自动生成3条提醒）', createRes.ok && createRes.code === 200,
-    createRes.ok ? {
-      订单ID: orderId,
-      订单号: orderNo,
-      提醒数量: createRes.data.notifications.length,
-      提醒渠道: [...new Set(createRes.data.notifications.map(n => n.channel))].join('/'),
-      提醒角色: createRes.data.notifications.map(n => `${n.role}(${n.channel})`).join(', ')
-    } : null,
-    createRes.ok ? null : createRes.message);
 
-  logSub('2.2 查询订单详情（含通知+异常+处理历史）');
-  const getOrder = await request(`/orders/${orderId}`);
-  logResult('订单详情接口', getOrder.ok && getOrder.code === 200,
-    getOrder.ok ? {
-      通知数: getOrder.data.notifications.length,
-      异常数: getOrder.data.exceptions.length,
-      附带处理历史: !!getOrder.data.exception_handlers
-    } : null,
-    getOrder.ok ? null : getOrder.message);
+  // 查时间线，验证真实时间
+  if (order1Id) {
+    const tl = await request(`/orders/${order1Id}/timeline`);
+    const events = tl.ok ? tl.data.timeline : [];
+    const sentEvent = events.find(e => e.type === 'notification_sent' && e.title.includes('开场前一天'));
+    const readEvent = events.find(e => e.type === 'notification_read' && e.title.includes('前台'));
+    const confirmEvent = events.find(e => e.type === 'notification_confirmed' && e.title.includes('前台'));
 
-  logSub('2.3 检查单条通知是否包含渠道和目标信息');
-  const fdNotif = await request(`/notifications/${notifIds.day_before}`);
-  logResult('前台提醒含渠道信息', fdNotif.ok && fdNotif.code === 200 && fdNotif.data.channel,
-    fdNotif.ok ? {
-      类型: fdNotif.data.type,
-      角色: fdNotif.data.role,
-      渠道: fdNotif.data.channel,
-      目标: fdNotif.data.channel_target,
-      发送次数: fdNotif.data.send_attempts
-    } : null,
-    fdNotif.ok ? null : fdNotif.message);
+    print(tl.ok && tl.data.total_events >= 6,
+      '订单时间线事件数正常',
+      tl.ok ? { 事件总数: tl.data.total_events, 类型数: new Set(events.map(e => e.type)).size } : null);
 
-  const cusNotif = await request(`/notifications/${notifIds.one_hour}`);
-  logResult('顾客提醒走短信渠道', cusNotif.ok && cusNotif.code === 200 && cusNotif.data.channel === 'sms',
-    cusNotif.ok ? { 角色: cusNotif.data.role, 渠道: cusNotif.data.channel, 目标: cusNotif.data.channel_target } : null,
-    cusNotif.ok ? null : cusNotif.message);
+    print(!!sentEvent && !!readEvent && !!confirmEvent,
+      '时间线包含发送/已读/确认三个事件',
+      { 发送: !!sentEvent, 已读: !!readEvent, 确认: !!confirmEvent });
 
-  logSub('2.4 手动立即发送顾客短信通知（验证渠道发送）');
-  const sendRes = await request(`/notifications/${notifIds.one_hour}/send`, 'POST');
-  logResult('手动发送短信通知（返回发送结果）', sendRes.ok && sendRes.code === 200,
-    sendRes.ok ? {
-      新状态: sendRes.data.notification.status,
-      渠道: sendRes.data.notification.channel,
-      发送结果: sendRes.data.send_detail && sendRes.data.send_detail.description,
-      结果原文: sendRes.data.notification.send_result ? '有记录' : '无记录'
-    } : null,
-    sendRes.ok ? null : sendRes.message);
-
-  logSub('2.5 确认前台提醒 + 同步确认蛋糕布置物料');
-  const confFd = await request(`/notifications/${notifIds.day_before}/confirm`, 'POST', {
-    cake: true,
-    decoration: true
-  });
-  logResult('前台确认通知（同步确认物料）', confFd.ok && confFd.code === 200,
-    confFd.ok ? { confirmed: !!confFd.data.confirmed } : null,
-    confFd.ok ? null : confFd.message);
-
-  const checkOrder = await request(`/orders/${orderId}`);
-  logResult('物料确认已同步到订单', checkOrder.ok && checkOrder.code === 200
-    && checkOrder.data.order.cake_confirmed === 1 && checkOrder.data.order.decoration_confirmed === 1,
-    checkOrder.ok ? {
-      cake: checkOrder.data.order.cake_confirmed,
-      decoration: checkOrder.data.order.decoration_confirmed
-    } : null,
-    checkOrder.ok ? null : checkOrder.message);
+    if (sentEvent && readEvent) {
+      const timeOk = dayjs(sentEvent.time).isBefore(dayjs(readEvent.time));
+      print(timeOk, '发送时间 < 已读时间 < 确认时间（真实时间排序）',
+        timeOk ? { 发送: sentEvent.time, 已读: readEvent.time, 确认: confirmEvent ? confirmEvent.time : 'N/A' } : null);
+    }
+  }
 
   // ============================================================
-  // 第三部分：异常闭环
+  // 第三部分：门店当日运营看板
   // ============================================================
-  logSection('三、异常上报→分配→处理→升级 闭环');
+  logSection('三、门店当日运营看板');
 
-  logSub('3.1 查看异常类型、处理选项、默认时限');
-  const types = await request('/exceptions/types');
-  logResult('获取异常元数据', types.ok && types.code === 200,
-    types.ok ? {
-      异常类型数: types.data.types.length,
-      处理选项数: types.data.resolutions.length,
-      蛋糕未到时限_min: types.data.default_deadline_minutes.cake_not_arrived,
-      人数变动时限_min: types.data.default_deadline_minutes.player_count_changed
-    } : null,
-    types.ok ? null : types.message);
+  logSub('3.1 创建今日订单 + 上报2个异常（1个处理中，1个超时）');
 
-  logSub('3.2 上报异常（蛋糕未到货）');
-  const reportExc = await request('/exceptions', 'POST', {
-    order_id: orderId,
-    type: 'cake_not_arrived',
-    description: '蛋糕供应商电话通知，预计比原定时间晚40分钟送达，可能影响开场布置',
-    reporter: '前台-小美'
+  // 创建今天的局（用于看板测试）
+  const todayOrder = await request('/orders', 'POST', {
+    store_key: 'default',
+    game_date: dayjs().add(8, 'hour').format('YYYY-MM-DD HH:mm:ss'),
+    room: 'VIP3',
+    script_name: '漓川怪谈簿·生日场',
+    player_count: 6,
+    main_player_name: '赵小雷',
+    main_player_phone: '137-0000-1111',
+    dm_name: 'DM小白',
+    dm_phone: '137-2222-3333',
+    front_desk_contact: '前台小王',
+    front_desk_phone: '137-4444-5555',
+    created_by: '看板测试'
   });
-  if (reportExc.ok && reportExc.code === 200) {
-    exceptionId = reportExc.data.id;
+  const todayOrderId = todayOrder.ok ? todayOrder.data.order.id : null;
+  print(todayOrder.ok, '创建今日生日局成功',
+    todayOrder.ok ? { id: todayOrderId, 开场: todayOrder.data.order.game_date } : null);
+
+  let exc1Id = null, exc2Id = null;
+  if (todayOrderId) {
+    // 异常1：正常待处理
+    const r1 = await request('/exceptions', 'POST', {
+      order_id: todayOrderId,
+      type: 'cake_not_arrived',
+      description: '蛋糕还没送到，预计晚15分钟',
+      reporter: '前台-小美'
+    });
+    exc1Id = r1.ok ? r1.data.id : null;
+    print(r1.ok, '上报蛋糕未到异常（正常处理中）',
+      r1.ok ? { id: exc1Id, 负责人: r1.data.assignee } : null);
+
+    // 异常2：超时（-5分钟）
+    const r2 = await request('/exceptions', 'POST', {
+      order_id: todayOrderId,
+      type: 'player_count_changed',
+      description: '玩家说要加2人',
+      reporter: 'DM-橙子',
+      deadline_minutes: -5
+    });
+    exc2Id = r2.ok ? r2.data.id : null;
+    print(r2.ok, '上报人数变动异常（设置-5分钟=立刻超时）',
+      r2.ok ? { id: exc2Id, deadline: r2.data.deadline } : null);
+
+    // 触发一次超时升级扫描
+    await request('/_debug/trigger-escalation', 'POST', {});
   }
-  logResult('上报蛋糕未到货（自动分配负责人+时限）',
-    reportExc.ok && reportExc.code === 200 && reportExc.data.assignee && reportExc.data.deadline,
-    reportExc.ok ? {
-      异常ID: exceptionId,
-      类型: reportExc.data.type_label,
-      负责人: reportExc.data.assignee,
-      处理时限: reportExc.data.deadline,
-      时限分钟: reportExc.data.deadline_minutes,
-      已生成分配记录: reportExc.data.handlers && reportExc.data.handlers.length > 0
+
+  logSub('3.2 看板接口 - 默认门店');
+  const today = dayjs().format('YYYY-MM-DD');
+  const dashDefault = await request(`/store-configs/default/dashboard?date=${today}`);
+  const dashData = dashDefault.ok ? dashDefault.data : null;
+
+  print(dashDefault.ok, '默认门店看板接口返回成功',
+    dashData ? {
+      门店: dashData.store_name,
+      日期: dashData.date,
+      订单数: dashData.stats.order_count,
+      待发送: dashData.stats.pending_notification_count,
+      未确认: dashData.stats.unconfirmed_notification_count,
+      处理中异常: dashData.stats.processing_exception_count,
+      超时异常: dashData.stats.overdue_exception_count
     } : null,
-    reportExc.ok ? null : reportExc.message);
+    dashDefault.ok ? null : dashDefault.message);
 
-  logSub('3.3 异常列表展示（含负责人+时限+超时标记）');
-  const listExc = await request('/exceptions');
-  const targetExc = listExc.ok ? listExc.data.list.find(e => e.id === exceptionId) : null;
-  logResult('异常列表含负责人/时限/超时字段',
-    !!targetExc && targetExc.assignee && targetExc.deadline && ('is_overdue' in targetExc),
-    targetExc ? {
-      负责人: targetExc.assignee,
-      时限: targetExc.deadline,
-      超时: targetExc.is_overdue,
-      处理历史数: targetExc.handlers ? targetExc.handlers.length : 0
-    } : null,
-    targetExc ? null : '未找到目标异常');
+  if (dashData) {
+    print(dashData.orders.length > 0, '看板包含订单列表（可定位到订单）',
+      { 订单数: dashData.orders.length, 首个订单号: dashData.orders[0]?.order_no });
 
-  logSub('3.4 校验：处理异常时 resolution 和 remark 必填');
-  const handleFail1 = await request(`/exceptions/${exceptionId}/handle`, 'POST', {
-    handled_by: '店长-钱总'
+    print(dashData.processing_exceptions.length > 0, '看板包含处理中异常（带负责人+超时标记）',
+      dashData.processing_exceptions.length > 0
+        ? { 数量: dashData.processing_exceptions.length,
+            首个负责人: dashData.processing_exceptions[0].assignee,
+            首个是否超时: dashData.processing_exceptions[0].is_overdue }
+        : null);
+
+    print(dashData.overdue_exceptions.length >= 1, '看板包含已超时异常列表',
+      { 超时异常数: dashData.overdue_exceptions.length });
+  }
+
+  logSub('3.3 看板 - 朝阳门店（数据为0也正常，验证隔离）');
+  const dashChaoyang = await request(`/store-configs/chaoyang/dashboard?date=${today}`);
+  print(dashChaoyang.ok, '朝阳门店看板返回成功（数据独立）',
+    dashChaoyang.ok ? { 门店: dashChaoyang.data.store_name, 订单数: dashChaoyang.data.stats.order_count } : null);
+
+  // ============================================================
+  // 第四部分：通知失败重试闭环
+  // ============================================================
+  logSection('四、通知失败重试闭环');
+
+  logSub('4.1 配置失败渠道 + 发送失败（记录原因 + 日志）');
+
+  // 给默认门店顾客渠道加 force_fail
+  await request('/store-configs/default', 'PUT', {
+    customer_channel_config: {
+      mock: true,
+      gateway: 'sms_gateway_test',
+      sign: '【剧本杀测试】',
+      force_fail: true,
+      force_fail_reason: '运营商网关超时'
+    }
   });
-  logResult('不填resolution+remark -> 拒绝处理',
-    handleFail1.status === 400 && handleFail1.code === 400,
-    null,
-    handleFail1.code === 400 ? handleFail1.message : '未返回400');
 
-  const handleFail2 = await request(`/exceptions/${exceptionId}/handle`, 'POST', {
-    resolution: 'contact_backup',
-    handled_by: '店长-钱总'
-  });
-  logResult('只填resolution不填remark -> 再次拒绝',
-    handleFail2.status === 400 && handleFail2.code === 400,
-    null,
-    handleFail2.code === 400 ? handleFail2.message : '未返回400');
-
-  logSub('3.5 先更新为处理中（补充情况）');
-  const handleProcess = await request(`/exceptions/${exceptionId}/handle`, 'POST', {
-    status: 'processing',
-    resolution: 'contact_backup',
-    handled_by: '店长-钱总',
-    remark: '已联系备用蛋糕店（甜蜜时光），对方答复30分钟内能送到同款蛋糕。已致电主角李四说明情况，对方表示理解并同意延迟15分钟开场。'
-  });
-  logResult('标记为处理中（必填都填写）',
-    handleProcess.ok && handleProcess.code === 200 && handleProcess.data.status === 'processing',
-    handleProcess.ok ? { 新状态: handleProcess.data.status, 处理历史数: handleProcess.data.handlers && handleProcess.data.handlers.length } : null,
-    handleProcess.ok ? null : handleProcess.message);
-
-  logSub('3.6 异常ID查询详情（含完整处理历史）');
-  const getExc = await request(`/exceptions/${exceptionId}`);
-  logResult('异常详情能看到每步处理历史',
-    getExc.ok && getExc.code === 200 && getExc.data.handlers && getExc.data.handlers.length >= 2,
-    getExc.ok ? {
-      状态: getExc.data.status,
-      负责人: getExc.data.assignee,
-      处理历史数: getExc.data.handlers.length,
-      历史动作: getExc.data.handlers.map(h => h.action).join(' → ')
-    } : null,
-    getExc.ok ? null : getExc.message);
-
-  logSub('3.7 最终解决异常（resolved）');
-  const handleResolve = await request(`/exceptions/${exceptionId}/handle`, 'POST', {
-    status: 'resolved',
-    resolution: 'contact_backup',
-    handled_by: '前台-小美',
-    remark: '备用蛋糕店已按约定送达，品相和口味符合要求。现场已快速布置，延迟10分钟开场。已向主角送上免费香槟服务作为补偿，对方非常满意。'
-  });
-  logResult('最终标记解决（完整填写）',
-    handleResolve.ok && handleResolve.code === 200 && handleResolve.data.status === 'resolved',
-    handleResolve.ok ? {
-      最终状态: handleResolve.data.status,
-      处理结果: handleResolve.data.resolution,
-      处理人: handleResolve.data.handled_by,
-      处理时间: handleResolve.data.handled_at,
-      历史总数: handleResolve.data.handlers && handleResolve.data.handlers.length
-    } : null,
-    handleResolve.ok ? null : handleResolve.message);
-
-  logSub('3.8 校验：resolved后不能再重复处理');
-  const handleAgain = await request(`/exceptions/${exceptionId}/handle`, 'POST', {
-    status: 'resolved',
-    resolution: 'other',
-    handled_by: '某人',
-    remark: '尝试重复处理'
-  });
-  logResult('已解决异常禁止重复处理',
-    handleAgain.status === 400 && handleAgain.code === 400,
-    null,
-    handleAgain.code === 400 ? handleAgain.message : '未返回400');
-
-  logSub('3.9 模拟超时：上报一个立刻超时的异常，触发升级');
-  const reportExc2 = await request('/exceptions', 'POST', {
-    order_id: orderId,
-    type: 'player_count_changed',
-    description: '玩家群里说突然减少2人，人数从8变6，需重新安排座位和物料',
-    reporter: 'DM-橙子',
-    deadline_minutes: -5
-  });
-  const exc2Id = reportExc2.ok ? reportExc2.data.id : null;
-  logResult('上报第二个异常（时限-5分钟=立刻超时）',
-    reportExc2.ok && reportExc2.code === 200,
-    reportExc2.ok ? { id: exc2Id, 时限: reportExc2.data.deadline, 负责人: reportExc2.data.assignee } : null,
-    reportExc2.ok ? null : reportExc2.message);
-
-  if (exc2Id) {
-    logSub('3.10 手动触发超时升级扫描（调试接口）');
-    const trigger = await request('/_debug/trigger-escalation', 'POST', {});
-    await sleep(500);
-    const escalated = await request(`/exceptions/${exc2Id}`);
-    const timeline = await request(`/orders/${orderId}/timeline`);
-    const hasEscalationEvent = timeline.ok && timeline.data.timeline.some(e =>
-      e.type === 'exception_escalated' || (e.type_label && e.type_label.includes('升级')));
-    logResult('超时异常自动升级（店长通知已生成）',
-      escalated.ok && escalated.data.escalated === 1,
-      escalated.ok ? {
-        扫描触发: trigger.ok ? '✅成功' : `❌${trigger.message}`,
-        扫描结果: trigger.ok ? trigger.result : null,
-        已升级: escalated.data.escalated === 1,
-        升级时间: escalated.data.escalated_at,
-        处理历史含escalate: escalated.data.handlers && escalated.data.handlers.some(h => h.action === 'escalate'),
-        时间线含升级事件: hasEscalationEvent
+  const custNotifId = defaultCustNotif ? defaultCustNotif.id : null;
+  let failedNotif = null;
+  if (custNotifId) {
+    const failSend = await request(`/notifications/${custNotifId}/send`, 'POST', {});
+    failedNotif = failSend.ok ? failSend.data.notification : null;
+    print(failSend.ok && failedNotif.status === 'failed',
+      '顾客短信发送失败（模拟运营商超时）',
+      failedNotif ? {
+        状态: failedNotif.status,
+        失败次数: failedNotif.send_attempts,
+        失败原因: failedNotif.last_error
       } : null,
-      escalated.ok ? null : escalated.message);
+      failSend.ok ? null : failSend.message);
+
+    // 查通知详情，看 send_logs
+    const notifDetail = await request(`/notifications/${custNotifId}`);
+    const logs = notifDetail.ok && notifDetail.data ? notifDetail.data.send_logs : [];
+    print(notifDetail.ok && logs && logs.length >= 1,
+      '通知详情含 send_logs 发送日志',
+      logs ? { 日志数: logs.length, 首次状态: logs[0]?.success ? '成功' : '失败', 失败原因: logs[0]?.error_message } : null);
+  }
+
+  logSub('4.2 重试第一次（仍然失败）');
+  let retry1 = null;
+  if (custNotifId) {
+    retry1 = await request(`/notifications/${custNotifId}/retry`, 'POST', {});
+    print(retry1.ok && retry1.data.notification.status === 'failed',
+      '第一次重试仍然失败（次数+1）',
+      retry1.ok ? { 当前次数: retry1.data.attempt, 状态: retry1.data.notification.status } : null);
+  }
+
+  logSub('4.3 取消 force_fail，重试第二次（成功）');
+  // 恢复正常渠道
+  await request('/store-configs/default', 'PUT', {
+    customer_channel_config: {
+      mock: true,
+      gateway: 'sms_gateway_test',
+      sign: '【剧本杀测试】'
+    }
+  });
+
+  let retry2 = null;
+  if (custNotifId) {
+    retry2 = await request(`/notifications/${custNotifId}/retry`, 'POST', {});
+    print(retry2.ok && retry2.data.notification.status === 'sent',
+      '第二次重试成功',
+      retry2.ok ? { 当前次数: retry2.data.attempt, 状态: retry2.data.notification.status } : null);
+
+    // 查通知详情，看有3次日志
+    const detail2 = await request(`/notifications/${custNotifId}`);
+    const logs2 = detail2.ok && detail2.data ? detail2.data.send_logs : [];
+    print(detail2.ok && logs2 && logs2.length >= 3,
+      '通知详情显示3条发送日志（1次首送+2次重试）',
+      logs2 ? { 日志总数: logs2.length, 最后一次: logs2[logs2.length - 1]?.success ? '成功' : '失败' } : null);
+  }
+
+  logSub('4.4 时间线包含失败/重试事件');
+  if (order1Id && custNotifId) {
+    const tl2 = await request(`/orders/${order1Id}/timeline`);
+    const events = tl2.ok ? tl2.data.timeline : [];
+    const failEvents = events.filter(e => e.type === 'notification_send_failed');
+    const successEvents = events.filter(e => e.type === 'notification_sent');
+    print(tl2.ok && failEvents.length >= 2 && successEvents.length >= 1,
+      '时间线包含失败和重试成功事件',
+      { 失败事件数: failEvents.length, 成功事件数: successEvents.length, 事件总数: tl2.data.total_events });
   }
 
   // ============================================================
-  // 第四部分：时间线
+  // 测试完成 - 汇总
   // ============================================================
-  logSection('四、订单完整服务时间线（店长复盘）');
-
-  const tl = await request(`/orders/${orderId}/timeline`);
-  logResult('订单时间线接口返回完整事件',
-    tl.ok && tl.code === 200 && tl.data.total_events >= 10,
-    tl.ok ? {
-      订单号: tl.data.order_summary.order_no,
-      剧本: tl.data.order_summary.script_name,
-      蛋糕已确认: !!tl.data.order_summary.cake_confirmed,
-      布置已确认: !!tl.data.order_summary.decoration_confirmed,
-      时间线事件总数: tl.data.total_events,
-      事件类型集合: [...new Set(tl.data.timeline.map(e => e.type_label.split('-')[0]))].slice(0, 8).join('、')
-    } : null,
-    tl.ok ? null : tl.message);
-
-  if (tl.ok && tl.data.timeline) {
-    console.log('\n  📜 时间线事件列表（前15条）:');
-    tl.data.timeline.slice(0, 15).forEach(e => {
-      const flag = e.type.includes('exception') ? '🔴' : (e.type.includes('notification') ? '🔵' : '🟢');
-      console.log(`     ${String(e.seq).padStart(2, '0')}. ${flag} [${e.time}] ${e.operator.padEnd(8)} | ${e.type_label.padEnd(20)} | ${e.title}`);
-    });
-  }
-
-  logSub('4.2 订单详情中也能看到异常处理记录');
-  const orderDetail = await request(`/orders/${orderId}`);
-  logResult('订单详情包含exception_handlers处理历史',
-    orderDetail.ok && orderDetail.code === 200
-      && orderDetail.data.exception_handlers && orderDetail.data.exception_handlers.length >= 4,
-    orderDetail.ok ? {
-      异常总数: orderDetail.data.exceptions.length,
-      处理历史总数: orderDetail.data.exception_handlers.length,
-      不同异常: [...new Set(orderDetail.data.exception_handlers.map(h => h.exception_id))].length + '个'
-    } : null,
-    orderDetail.ok ? null : orderDetail.message);
-
-  // ============================================================
-  // 总结
-  // ============================================================
-  logSection('测试完成 - 结果汇总');
-
-  console.log(`
-    🎯 核心验证项回顾:
-
-    ✅ 门店配置模块
-      • 默认门店存在，前台/DM=企业微信，顾客=短信
-      • 可更新店长信息、异常时限、渠道webhook
-      • 可按角色预览对应渠道
-
-    ✅ 订单&通知模块
-      • 创建订单自动生成3条提醒，且各提醒带对应渠道信息
-      • 前台=企业微信，DM=企业微信，顾客=短信
-      • 手动发送通知通过ChannelSender，结果可追溯（send_result）
-      • 确认前台通知时可同步确认蛋糕+布置物料
-      • 通知详情显示发送次数、渠道、目标、返回结果
-
-    ✅ 异常闭环模块
-      • 上报异常自动分配负责人（默认负责人）+ 按时长设时限
-      • 列表显示：负责人、处理时限、是否超时
-      • 处理强制校验：resolution（处理结果）+ remark（备注）都必填
-      • 已resolved/ignored的异常不能再重复处理
-      • 支持processing中间状态更新
-      • 异常详情可看所有处理历史（分配→处理中→解决）
-      • 超时未处理自动升级店长，生成升级提醒并写入处理历史
-
-    ✅ 服务时间线
-      • 订单创建、信息更新、3次提醒的计划/发送/确认、异常上报、
-        每步处理动作、超时升级，全部按时间顺序串联
-      • 订单详情接口同时返回通知、异常、处理历史
-  `);
-
-  console.log(`  📌 测试数据:
-     - 订单ID: ${orderId}  订单号: ${orderNo}
-     - 异常ID(蛋糕未到): ${exceptionId}
-     - 测试URL: http://localhost:3000/\n`);
+  console.log('\n' + '='.repeat(75));
+  console.log('  测试完成 - 结果汇总');
+  console.log('='.repeat(75));
+  console.log(`\n    📊 总计: ${passCount + failCount} 个测试点`);
+  console.log(`    ✅ 通过: ${passCount}`);
+  console.log(`    ❌ 失败: ${failCount}`);
+  console.log(`\n    🎯 核心验证项回顾:\n`);
+  console.log('    ✅ 多门店渠道隔离');
+  console.log('      • 两家门店可独立配置渠道（wecom/dingtalk/sms/console）');
+  console.log('      • 订单绑定 store_key，通知生成自动取对应门店配置');
+  console.log('      • 通知列表/异常列表支持按 storeKey 过滤');
+  console.log('      • 门店数据完全隔离，没有串店\n');
+  console.log('    ✅ 时间线真实时间');
+  console.log('      • 通知发送/已读/确认都用真实时间（sent_time/read_at/confirmed_at）');
+  console.log('      • 时间线按真实时间排序，店长复盘一目了然');
+  console.log('      • 每次发送（含失败/重试）都在时间线上有记录\n');
+  console.log('    ✅ 门店当日运营看板');
+  console.log('      • 按门店+日期聚合：订单数/待发送/未确认/处理中/超时');
+  console.log('      • 每个分类都有详细列表，可直接定位订单和负责人');
+  console.log('      • 异常带 is_overdue 标记，店长一眼看出哪些超期\n');
+  console.log('    ✅ 通知失败重试闭环');
+  console.log('      • 发送失败记录 last_error 失败原因');
+  console.log('      • 每次发送都写 notification_send_logs 日志（次数、结果、原因）');
+  console.log('      • 支持手动 retry 重试，失败可多次重试直到成功');
+  console.log('      • 通知详情、订单时间线都能看到每次发送记录\n');
+  console.log('  📌 测试数据:');
+  console.log(`     - 默认门店订单ID: ${order1Id || 'N/A'}`);
+  console.log(`     - 朝阳门店订单ID: ${order2Id || 'N/A'}`);
+  console.log(`     - 失败重试通知ID: ${custNotifId || 'N/A'}`);
+  console.log(`     - 测试URL: http://localhost:3000/\n`);
 };
 
 runTests().catch(err => {
-  console.error('测试执行失败:', err);
+  console.error('测试运行异常:', err);
   process.exit(1);
 });

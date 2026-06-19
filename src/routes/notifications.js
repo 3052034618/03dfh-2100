@@ -7,5 +7,6 @@ router.get('/:id', notificationController.getNotification);
 router.post('/:id/read', notificationController.markAsRead);
 router.post('/:id/confirm', notificationController.confirmNotification);
 router.post('/:id/send', notificationController.sendNow);
+router.post('/:id/retry', notificationController.retrySend);
 
 module.exports = router;
