@@ -86,13 +86,24 @@ module.exports = {
     console.log('='.repeat(70) + '\n');
     const updated = NotificationModel.recordSendResult(
       id, sendResult.success, sendResult.description, sendResult.channel, sendResult.target,
-      sendResult.success ? null : (sendResult.error || sendResult.description)
+      sendResult.success ? null : (sendResult.error || sendResult.description),
+      'manual'
     );
+    if (!sendResult.success) {
+      const retryConfig = StoreConfigModel.getRetryConfig(storeKey);
+      const notif = NotificationModel.getById(id);
+      if ((notif.auto_retry_count || 0) < retryConfig.max_retries) {
+        const nextRetryAt = dayjs().add(retryConfig.retry_interval_minutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
+        NotificationModel.update(id, { next_retry_at: nextRetryAt });
+      }
+    } else {
+      NotificationModel.update(id, { next_retry_at: null });
+    }
     res.json({
       code: 200,
       message: sendResult.success ? '发送成功' : '发送失败',
       data: {
-        notification: updated,
+        notification: NotificationModel.getById(id),
         send_detail: sendResult
       }
     });
@@ -114,7 +125,7 @@ module.exports = {
     if (notification.role === 'DM' && order) target = order.dm_name + (order.dm_phone ? `(${order.dm_phone})` : '');
     const attemptNo = (notification.send_attempts || 0) + 1;
     console.log('\n' + '='.repeat(70));
-    console.log(`[重试发送通知] 第 ${attemptNo} 次 | ${dayjs().format('YYYY-MM-DD HH:mm:ss')}`);
+    console.log(`[手动重试通知] 第 ${attemptNo} 次 | ${dayjs().format('YYYY-MM-DD HH:mm:ss')}`);
     console.log(`  通知ID: ${id} | 类型: ${notification.type} | 角色: ${notification.role}`);
     console.log(`  门店: ${storeKey} | 渠道: ${channelInfo.type} | 目标: ${target}`);
     console.log('-'.repeat(70));
@@ -134,14 +145,25 @@ module.exports = {
     console.log('='.repeat(70) + '\n');
     const updated = NotificationModel.recordSendResult(
       id, sendResult.success, sendResult.description, sendResult.channel, sendResult.target,
-      sendResult.success ? null : (sendResult.error || sendResult.description)
+      sendResult.success ? null : (sendResult.error || sendResult.description),
+      'manual'
     );
+    if (!sendResult.success) {
+      const retryConfig = StoreConfigModel.getRetryConfig(storeKey);
+      const notif = NotificationModel.getById(id);
+      if ((notif.auto_retry_count || 0) < retryConfig.max_retries) {
+        const nextRetryAt = dayjs().add(retryConfig.retry_interval_minutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
+        NotificationModel.update(id, { next_retry_at: nextRetryAt });
+      }
+    } else {
+      NotificationModel.update(id, { next_retry_at: null });
+    }
     res.json({
       code: 200,
       message: sendResult.success ? '重试成功' : '重试失败',
       data: {
         attempt: attemptNo,
-        notification: updated,
+        notification: NotificationModel.getById(id),
         send_detail: sendResult
       }
     });

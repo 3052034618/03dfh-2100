@@ -133,6 +133,10 @@ const initDatabase = async () => {
   `);
 
   addColumnIfNotExists('notification_send_logs', 'error_message TEXT');
+  addColumnIfNotExists('notification_send_logs', 'trigger_type TEXT DEFAULT "manual"');
+
+  addColumnIfNotExists('notifications', 'auto_retry_count INTEGER DEFAULT 0');
+  addColumnIfNotExists('notifications', 'next_retry_at TEXT');
 
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS exceptions (
@@ -210,6 +214,8 @@ const initDatabase = async () => {
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exceptions_deadline ON exceptions(deadline)`);
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exception_handlers_exception_id ON exception_handlers(exception_id)`);
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exception_handlers_order_id ON exception_handlers(order_id)`);
+  addColumnIfNotExists('store_configs', 'retry_config TEXT');
+
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_store_configs_store_key ON store_configs(store_key)`);
 
   const defaultConfig = dbInstance.exec("SELECT COUNT(*) as c FROM store_configs WHERE store_key = 'default'");

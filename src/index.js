@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
   res.json({
     code: 200,
     message: '剧本杀生日包场通知服务',
-    version: '2.1.0',
+    version: '2.2.0',
     endpoints: {
       orders: '/api/orders',
       notifications: '/api/notifications',
@@ -33,12 +33,13 @@ app.get('/', (req, res) => {
       store_configs: {
         'GET    /api/store-configs': '门店配置列表',
         'GET    /api/store-configs/:key': '查询门店配置',
-        'POST   /api/store-configs': '新增门店配置',
-        'PUT    /api/store-configs/:key': '更新门店配置（渠道、负责人、时限）',
+        'POST   /api/store-configs': '新增门店配置（支持 retry_config 重试策略）',
+        'PUT    /api/store-configs/:key': '更新门店配置（渠道、负责人、时限、重试策略）',
         'DELETE /api/store-configs/:key': '删除门店配置',
         'GET    /api/store-configs/channels': '支持的通知渠道列表',
         'GET    /api/store-configs/:key/preview?role=前台|DM|顾客|店长': '预览某角色的渠道配置',
-        'GET    /api/store-configs/:key/dashboard?date=YYYY-MM-DD': '门店当日运营看板（订单/待发/未确认/异常/超时）'
+        'GET    /api/store-configs/:key/dashboard?date=YYYY-MM-DD': '门店当日运营看板（严格按门店+日期隔离）',
+        'GET    /api/store-configs/:key/daily-report?date=YYYY-MM-DD': '店长复盘日报（触达/确认耗时/异常耗时/风险订单）'
       },
       orders: {
         'POST   /api/orders': '创建生日包场订单（支持 store_key，自动按门店渠道生成3条提醒）',
@@ -59,10 +60,10 @@ app.get('/', (req, res) => {
       },
       exceptions: {
         'GET    /api/exceptions/types': '获取异常类型、处理选项、默认处理时限',
-        'POST   /api/exceptions': '上报异常（自动分配负责人和处理时限，不同类型时限不同）',
+        'POST   /api/exceptions': '上报异常（自动按订单所属门店分配负责人和时限）',
         'GET    /api/exceptions': '异常列表（支持 storeKey/orderId/status/assignee/page/pageSize 参数，含 is_overdue 标记）',
         'GET    /api/exceptions/:id': '查询异常详情（含处理历史、负责人、时限、超时标记）',
-        'POST   /api/exceptions/:id/assign': '重新分配负责人及处理时限',
+        'POST   /api/exceptions/:id/assign': '重新分配负责人及处理时限（按订单门店取时限）',
         'POST   /api/exceptions/:id/handle': '处理异常（resolution 处理结果 + remark 备注均为必填）'
       }
     }
@@ -104,18 +105,19 @@ const startServer = async () => {
   await initDatabase();
   app.listen(config.port, () => {
     console.log('\n' + '='.repeat(65));
-    console.log('  剧本杀商家生日包场通知服务 v2.0');
+    console.log('  剧本杀商家生日包场通知服务 v2.2');
     console.log(`  服务地址: http://localhost:${config.port}`);
     console.log(`  API 文档: http://localhost:${config.port}/`);
     console.log('='.repeat(65));
     console.log('  核心能力:');
-    console.log('    • 多门店通知渠道配置（企业微信/短信/钉钉）');
+    console.log('    • 多门店通知渠道配置（企业微信/短信/钉钉）+ 重试策略');
     console.log('    • 订单创建自动匹配渠道生成3个节点提醒');
-    console.log('    • 通知发送结果可追溯（渠道、目标、结果）');
-    console.log('    • 异常自动分配负责人 + 处理时限（按类型）');
+    console.log('    • 通知发送失败自动重试 + 达上限升级店长');
+    console.log('    • 异常自动分配负责人 + 按订单门店走时限');
     console.log('    • 异常超时自动升级至店长（生成升级提醒）');
-    console.log('    • 异常处理强制校验：处理结果+备注必填');
-    console.log('    • 订单完整服务时间线（用于复盘）');
+    console.log('    • 门店运营看板（严格门店+日期隔离）');
+    console.log('    • 店长复盘日报（触达率/确认耗时/异常耗时/风险订单）');
+    console.log('    • 时间线区分自动重试/手动重试');
     console.log('='.repeat(65) + '\n');
     notificationScheduler.start();
   });

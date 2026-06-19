@@ -109,19 +109,11 @@ module.exports = {
     let overdueExceptions = [];
 
     if (orderIds.length > 0) {
-      const notifListRes = NotificationModel.list({ storeKey, pageSize: 500 });
-      const allNotifs = notifListRes.list || [];
-      const dayStart = dayjs(targetDate).format('YYYY-MM-DD 00:00:00');
-      const dayEnd = dayjs(targetDate).format('YYYY-MM-DD 23:59:59');
-      pendingNotifications = allNotifs.filter(n =>
-        n.status === 'pending' && n.scheduled_time >= dayStart && n.scheduled_time <= dayEnd
-      );
-      unconfirmedNotifications = allNotifs.filter(n =>
-        n.status !== 'pending' && n.confirmed !== 1
-      );
+      const allNotifs = NotificationModel.getByOrderIds(orderIds);
+      pendingNotifications = allNotifs.filter(n => n.status === 'pending');
+      unconfirmedNotifications = allNotifs.filter(n => n.status !== 'pending' && n.confirmed !== 1);
 
-      const excListRes = ExceptionModel.list({ storeKey, pageSize: 500 });
-      const allExcs = excListRes.list || [];
+      const allExcs = ExceptionModel.getByOrderIds(orderIds);
       processingExceptions = allExcs.filter(e =>
         e.status !== 'resolved' && e.status !== 'ignored'
       );
@@ -199,6 +191,164 @@ module.exports = {
           assignee: e.assignee,
           deadline: e.deadline,
           escalated: !!e.escalated
+        }))
+      }
+    });
+  },
+
+  dailyReport: (req, res) => {
+    const { key } = req.params;
+    const { date } = req.query;
+    const storeKey = key || 'default';
+    const targetDate = date || dayjs().format('YYYY-MM-DD');
+
+    const storeConfig = StoreConfigModel.getByKey(storeKey);
+    if (!storeConfig) {
+      return res.status(404).json({ code: 404, message: '门店配置不存在' });
+    }
+
+    const orders = OrderModel.getByDateAndStore(targetDate, storeKey);
+    const orderIds = orders.map(o => o.id);
+
+    let totalNotifications = 0;
+    let sentNotifications = 0;
+    let failedNotifications = 0;
+    let confirmedNotifications = 0;
+    let confirmationTimes = [];
+    let totalExceptions = 0;
+    let resolvedExceptions = 0;
+    let overdueExceptionCount = 0;
+    let exceptionHandlingTimes = [];
+    let riskOrders = [];
+
+    if (orderIds.length > 0) {
+      const allNotifs = NotificationModel.getByOrderIds(orderIds);
+      totalNotifications = allNotifs.length;
+      sentNotifications = allNotifs.filter(n => n.status === 'sent').length;
+      failedNotifications = allNotifs.filter(n => n.status === 'failed').length;
+      confirmedNotifications = allNotifs.filter(n => n.confirmed === 1).length;
+
+      for (const n of allNotifs) {
+        if (n.sent_time && n.confirmed_at) {
+          const diff = dayjs(n.confirmed_at).diff(dayjs(n.sent_time), 'second');
+          if (diff >= 0) confirmationTimes.push(diff);
+        }
+      }
+
+      const allExcs = ExceptionModel.getByOrderIds(orderIds);
+      totalExceptions = allExcs.length;
+      resolvedExceptions = allExcs.filter(e => e.status === 'resolved' || e.status === 'ignored').length;
+      const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+      overdueExceptionCount = allExcs.filter(e =>
+        e.status !== 'resolved' && e.status !== 'ignored'
+        && e.deadline && e.deadline <= now
+      ).length;
+
+      for (const e of allExcs) {
+        if (e.handled_at && e.created_at) {
+          const diff = dayjs(e.handled_at).diff(dayjs(e.created_at), 'second');
+          if (diff >= 0) exceptionHandlingTimes.push(diff);
+        }
+      }
+
+      for (const order of orders) {
+        const risks = [];
+        const orderNotifs = allNotifs.filter(n => n.order_id === order.id);
+        const orderExcs = allExcs.filter(e => e.order_id === order.id);
+        const hasFailed = orderNotifs.some(n => n.status === 'failed');
+        const hasUnconfirmed = orderNotifs.some(n => n.status === 'sent' && n.confirmed !== 1);
+        const hasOverdue = orderExcs.some(e =>
+          e.status !== 'resolved' && e.status !== 'ignored'
+          && e.deadline && e.deadline <= now
+        );
+        if (hasFailed) risks.push('通知发送失败');
+        if (hasUnconfirmed) risks.push('通知未确认');
+        if (hasOverdue) risks.push('异常超时未处理');
+        if (orderExcs.filter(e => e.status !== 'resolved' && e.status !== 'ignored').length >= 2) risks.push('多异常并发');
+        if (risks.length > 0) {
+          riskOrders.push({
+            order_id: order.id,
+            order_no: order.order_no,
+            game_date: order.game_date,
+            room: order.room,
+            script_name: order.script_name,
+            main_player_name: order.main_player_name,
+            dm_name: order.dm_name,
+            risk_factors: risks,
+            failed_notification_count: orderNotifs.filter(n => n.status === 'failed').length,
+            unconfirmed_notification_count: orderNotifs.filter(n => n.status === 'sent' && n.confirmed !== 1).length,
+            overdue_exception_count: orderExcs.filter(e =>
+              e.status !== 'resolved' && e.status !== 'ignored' && e.deadline && e.deadline <= now
+            ).length
+          });
+        }
+      }
+    }
+
+    const avgConfirmationSeconds = confirmationTimes.length > 0
+      ? Math.round(confirmationTimes.reduce((a, b) => a + b, 0) / confirmationTimes.length)
+      : null;
+    const avgHandlingSeconds = exceptionHandlingTimes.length > 0
+      ? Math.round(exceptionHandlingTimes.reduce((a, b) => a + b, 0) / exceptionHandlingTimes.length)
+      : null;
+
+    const formatDuration = (seconds) => {
+      if (seconds === null) return null;
+      if (seconds < 60) return `${seconds}秒`;
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      if (m < 60) return `${m}分${s > 0 ? s + '秒' : ''}`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return `${h}时${rm > 0 ? rm + '分' : ''}`;
+    };
+
+    res.json({
+      code: 200,
+      data: {
+        store_key: storeKey,
+        store_name: storeConfig.store_name,
+        date: targetDate,
+        summary: {
+          order_count: orders.length,
+          notification_stats: {
+            total: totalNotifications,
+            sent: sentNotifications,
+            failed: failedNotifications,
+            confirmed: confirmedNotifications,
+            reach_rate: totalNotifications > 0
+              ? Math.round(sentNotifications / totalNotifications * 100) + '%'
+              : '0%',
+            confirm_rate: sentNotifications > 0
+              ? Math.round(confirmedNotifications / sentNotifications * 100) + '%'
+              : '0%',
+            avg_confirmation_time: formatDuration(avgConfirmationSeconds),
+            avg_confirmation_seconds: avgConfirmationSeconds
+          },
+          exception_stats: {
+            total: totalExceptions,
+            resolved: resolvedExceptions,
+            overdue: overdueExceptionCount,
+            resolve_rate: totalExceptions > 0
+              ? Math.round(resolvedExceptions / totalExceptions * 100) + '%'
+              : '0%',
+            avg_handling_time: formatDuration(avgHandlingSeconds),
+            avg_handling_seconds: avgHandlingSeconds
+          }
+        },
+        risk_orders: riskOrders,
+        orders: orders.map(o => ({
+          id: o.id,
+          order_no: o.order_no,
+          game_date: o.game_date,
+          room: o.room,
+          script_name: o.script_name,
+          main_player_name: o.main_player_name,
+          dm_name: o.dm_name,
+          player_count: o.player_count,
+          cake_confirmed: !!o.cake_confirmed,
+          decoration_confirmed: !!o.decoration_confirmed,
+          status: o.status
         }))
       }
     });

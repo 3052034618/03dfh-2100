@@ -66,10 +66,11 @@ module.exports = {
     }
     const order = OrderModel.getById(order_id);
     if (!order) return res.status(404).json({ code: 404, message: '订单不存在' });
-    const finalAssignee = assignee || StoreConfigModel.getDefaultAssignee('default');
+    const orderStoreKey = order.store_key || 'default';
+    const finalAssignee = assignee || StoreConfigModel.getDefaultAssignee(orderStoreKey);
     const finalDeadlineMinutes = deadline_minutes
       ? Number(deadline_minutes)
-      : (EXCEPTION_DEADLINE_MAP[type] || StoreConfigModel.getDeadlineMinutes('default'));
+      : (EXCEPTION_DEADLINE_MAP[type] || StoreConfigModel.getDeadlineMinutes(orderStoreKey));
     const deadline = dayjs().add(finalDeadlineMinutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
     try {
       const exception = ExceptionModel.create({
@@ -122,7 +123,9 @@ module.exports = {
     if (!exception) return res.status(404).json({ code: 404, message: '异常记录不存在' });
     if (!assignee) return res.status(400).json({ code: 400, message: 'assignee 负责人为必填项' });
     if (!handled_by) return res.status(400).json({ code: 400, message: 'handled_by 操作人为必填项' });
-    const minutes = deadline_minutes ? Number(deadline_minutes) : StoreConfigModel.getDeadlineMinutes('default');
+    const order = OrderModel.getById(exception.order_id);
+    const orderStoreKey = order ? (order.store_key || 'default') : 'default';
+    const minutes = deadline_minutes ? Number(deadline_minutes) : StoreConfigModel.getDeadlineMinutes(orderStoreKey);
     const deadline = dayjs().add(minutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
     const updated = ExceptionModel.assign(id, assignee, deadline, handled_by);
     res.json({

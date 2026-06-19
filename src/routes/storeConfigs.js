@@ -3,6 +3,7 @@ const router = express.Router();
 const storeConfigController = require('../controllers/storeConfigController');
 
 router.get('/channels', storeConfigController.channelTypes);
+router.get('/:key/daily-report', storeConfigController.dailyReport);
 router.get('/:key/dashboard', storeConfigController.dashboard);
 router.get('/:key/preview', storeConfigController.previewChannelForRole);
 router.post('/', storeConfigController.create);

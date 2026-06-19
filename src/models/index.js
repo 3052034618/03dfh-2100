@@ -32,7 +32,8 @@ const StoreConfigModel = {
       ...row,
       front_desk_channel_config: tryParseJSON(row.front_desk_channel_config),
       dm_channel_config: tryParseJSON(row.dm_channel_config),
-      customer_channel_config: tryParseJSON(row.customer_channel_config)
+      customer_channel_config: tryParseJSON(row.customer_channel_config),
+      retry_config: tryParseJSON(row.retry_config)
     };
   },
 
@@ -45,8 +46,9 @@ const StoreConfigModel = {
         dm_channel_type, dm_channel_config,
         customer_channel_type, customer_channel_config,
         manager_phone, manager_name, default_assignee, exception_deadline_minutes,
+        retry_config,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       data.store_key, data.store_name, data.address || null,
       data.front_desk_channel_type || 'wecom',
@@ -57,6 +59,7 @@ const StoreConfigModel = {
       data.customer_channel_config ? JSON.stringify(data.customer_channel_config) : null,
       data.manager_phone || null, data.manager_name || null,
       data.default_assignee || null, data.exception_deadline_minutes || 60,
+      data.retry_config ? JSON.stringify(data.retry_config) : null,
       now, now
     ]);
     const row = get('SELECT MAX(id) as max_id FROM store_configs');
@@ -73,7 +76,8 @@ const StoreConfigModel = {
       'manager_phone', 'manager_name', 'default_assignee', 'exception_deadline_minutes'
     ];
     const jsonFields = [
-      'front_desk_channel_config', 'dm_channel_config', 'customer_channel_config'
+      'front_desk_channel_config', 'dm_channel_config', 'customer_channel_config',
+      'retry_config'
     ];
     for (const field of allowed) {
       if (data[field] !== undefined) {
@@ -122,6 +126,13 @@ const StoreConfigModel = {
   getDeadlineMinutes(storeKey = 'default') {
     const cfg = this.getByKey(storeKey);
     return cfg && cfg.exception_deadline_minutes ? cfg.exception_deadline_minutes : 60;
+  },
+
+  getRetryConfig(storeKey = 'default') {
+    const cfg = this.getByKey(storeKey);
+    const defaults = { max_retries: 3, retry_interval_minutes: 5, escalate_on_max_retries: true };
+    if (!cfg || !cfg.retry_config) return defaults;
+    return { ...defaults, ...cfg.retry_config };
   }
 };
 
@@ -282,17 +293,18 @@ const OrderModel = {
         for (const log of n.send_logs) {
           const logChannelLabel = { wecom: '企业微信', sms: '短信', dingtalk: '钉钉', console: '控制台' }[log.channel] || log.channel;
           const statusLabel = log.success ? '发送成功' : '发送失败';
+          const triggerLabel = log.trigger_type === 'auto' ? '自动重试' : (log.trigger_type === 'scheduled' ? '定时推送' : '手动操作');
           const detail = log.success
-            ? `第 ${log.attempt_no} 次发送：${statusLabel}，渠道：${logChannelLabel}，结果：${log.result_text || 'OK'}`
-            : `第 ${log.attempt_no} 次发送：${statusLabel}，渠道：${logChannelLabel}，原因：${log.error_message || log.result_text || '未知'}`;
+            ? `第 ${log.attempt_no} 次发送（${triggerLabel}）：${statusLabel}，渠道：${logChannelLabel}，结果：${log.result_text || 'OK'}`
+            : `第 ${log.attempt_no} 次发送（${triggerLabel}）：${statusLabel}，渠道：${logChannelLabel}，原因：${log.error_message || log.result_text || '未知'}`;
           events.push({
             time: log.sent_at,
             type: log.success ? 'notification_sent' : 'notification_send_failed',
-            type_label: `${typeLabel}-${log.success ? '已发送' : '发送失败'}`,
-            title: `${typeLabel} ${statusLabel}（第${log.attempt_no}次）`,
+            type_label: `${typeLabel}-${log.success ? '已发送' : '发送失败'}（${triggerLabel}）`,
+            title: `${typeLabel} ${statusLabel}（第${log.attempt_no}次·${triggerLabel}）`,
             content: detail,
             operator: '系统',
-            meta: { attempt: log.attempt_no, log_id: log.id },
+            meta: { attempt: log.attempt_no, log_id: log.id, trigger_type: log.trigger_type },
             icon: log.success ? '🔵' : '🟡'
           });
         }
@@ -422,7 +434,8 @@ const NotificationModel = {
     const values = [];
     const allowedFields = [
       'status', 'sent_time', 'read_at', 'confirmed', 'confirmed_at',
-      'channel', 'channel_target', 'send_result', 'last_error'
+      'channel', 'channel_target', 'send_result', 'last_error',
+      'auto_retry_count', 'next_retry_at'
     ];
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
@@ -439,7 +452,7 @@ const NotificationModel = {
     return this.getById(id);
   },
 
-  recordSendResult(id, success, resultText, channelType, channelTarget, errorMsg) {
+  recordSendResult(id, success, resultText, channelType, channelTarget, errorMsg, triggerType) {
     const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
     const notif = this.getById(id);
     const attemptNo = (notif ? notif.send_attempts : 0) + 1;
@@ -453,9 +466,10 @@ const NotificationModel = {
       channel_target: channelTarget,
       result_text: resultText,
       error_message: errorMsg || null,
-      sent_at: now
+      sent_at: now,
+      trigger_type: triggerType || 'manual'
     });
-    return this.update(id, {
+    const updates = {
       status: success ? 'sent' : 'failed',
       sent_time: now,
       send_result: resultText,
@@ -463,7 +477,11 @@ const NotificationModel = {
       channel_target: channelTarget,
       last_error: success ? null : (errorMsg || resultText),
       send_attempts: 1
-    });
+    };
+    if (triggerType === 'auto' && !success && notif) {
+      updates.auto_retry_count = (notif.auto_retry_count || 0) + 1;
+    }
+    return this.update(id, updates);
   },
 
   getPendingNotifications(beforeTime) {
@@ -474,10 +492,31 @@ const NotificationModel = {
     );
   },
 
+  getRetryableNotifications(beforeTime) {
+    const time = beforeTime || dayjs().format('YYYY-MM-DD HH:mm:ss');
+    return all(
+      `SELECT * FROM notifications WHERE status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= ?`,
+      [time]
+    );
+  },
+
   getByOrderId(orderId) {
     const list = all(
       `SELECT * FROM notifications WHERE order_id = ? ORDER BY scheduled_time ASC`,
       [orderId]
+    );
+    return list.map(n => {
+      n.send_logs = NotificationSendLogModel.getByNotificationId(n.id);
+      return n;
+    });
+  },
+
+  getByOrderIds(orderIds) {
+    if (!orderIds || orderIds.length === 0) return [];
+    const placeholders = orderIds.map(() => '?').join(',');
+    const list = all(
+      `SELECT * FROM notifications WHERE order_id IN (${placeholders}) ORDER BY scheduled_time ASC`,
+      orderIds
     );
     return list.map(n => {
       n.send_logs = NotificationSendLogModel.getByNotificationId(n.id);
@@ -529,12 +568,13 @@ const NotificationSendLogModel = {
     run(`
       INSERT INTO notification_send_logs (
         notification_id, order_id, order_no, attempt_no,
-        success, channel, channel_target, result_text, error_message, sent_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        success, channel, channel_target, result_text, error_message, sent_at, trigger_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       data.notification_id, data.order_id, data.order_no, data.attempt_no,
       data.success || 0, data.channel || null, data.channel_target || null,
-      data.result_text || null, data.error_message || null, data.sent_at
+      data.result_text || null, data.error_message || null, data.sent_at,
+      data.trigger_type || 'manual'
     ]);
     const row = get('SELECT MAX(id) as max_id FROM notification_send_logs');
     return this.getById(row ? row.max_id : null);
@@ -758,6 +798,19 @@ const ExceptionModel = {
     const list = all(
       `SELECT * FROM exceptions WHERE order_id = ? ORDER BY created_at DESC`,
       [orderId]
+    );
+    return list.map(e => ({
+      ...e,
+      handlers: ExceptionHandlerModel.getByExceptionId(e.id)
+    }));
+  },
+
+  getByOrderIds(orderIds) {
+    if (!orderIds || orderIds.length === 0) return [];
+    const placeholders = orderIds.map(() => '?').join(',');
+    const list = all(
+      `SELECT * FROM exceptions WHERE order_id IN (${placeholders}) ORDER BY created_at ASC`,
+      orderIds
     );
     return list.map(e => ({
       ...e,
