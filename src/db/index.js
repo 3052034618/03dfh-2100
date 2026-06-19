@@ -33,6 +33,27 @@ setInterval(() => {
 process.on('exit', saveDatabase);
 process.on('SIGINT', () => { saveDatabase(); process.exit(0); });
 
+const columnExists = (tableName, columnName) => {
+  try {
+    const rows = dbInstance.exec(`PRAGMA table_info(${tableName})`);
+    if (rows && rows.length > 0 && rows[0].values) {
+      return rows[0].values.some(col => col[1] === columnName);
+    }
+  } catch (e) {}
+  return false;
+};
+
+const addColumnIfNotExists = (tableName, columnDef) => {
+  const colName = columnDef.split(' ')[0];
+  if (!columnExists(tableName, colName)) {
+    try {
+      dbInstance.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnDef}`);
+    } catch (e) {
+      console.warn(`[数据库] 新增字段 ${tableName}.${colName} 跳过: ${e.message}`);
+    }
+  }
+};
+
 const initDatabase = async () => {
   const SQL = await initSqlJs();
   dbInstance = loadDatabase(SQL);
@@ -74,9 +95,18 @@ const initDatabase = async () => {
       status TEXT DEFAULT 'pending',
       read_at TEXT,
       confirmed INTEGER DEFAULT 0,
+      channel TEXT,
+      channel_target TEXT,
+      send_result TEXT,
+      send_attempts INTEGER DEFAULT 0,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
     );
   `);
+
+  addColumnIfNotExists('notifications', 'channel TEXT');
+  addColumnIfNotExists('notifications', 'channel_target TEXT');
+  addColumnIfNotExists('notifications', 'send_result TEXT');
+  addColumnIfNotExists('notifications', 'send_attempts INTEGER DEFAULT 0');
 
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS exceptions (
@@ -92,7 +122,55 @@ const initDatabase = async () => {
       remark TEXT,
       created_at TEXT NOT NULL,
       handled_at TEXT,
+      assignee TEXT,
+      deadline TEXT,
+      escalated INTEGER DEFAULT 0,
+      escalated_at TEXT,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+    );
+  `);
+
+  addColumnIfNotExists('exceptions', 'assignee TEXT');
+  addColumnIfNotExists('exceptions', 'deadline TEXT');
+  addColumnIfNotExists('exceptions', 'escalated INTEGER DEFAULT 0');
+  addColumnIfNotExists('exceptions', 'escalated_at TEXT');
+
+  dbInstance.run(`
+    CREATE TABLE IF NOT EXISTS exception_handlers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      exception_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      order_no TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status_from TEXT,
+      status_to TEXT,
+      resolution TEXT,
+      remark TEXT NOT NULL,
+      handled_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (exception_id) REFERENCES exceptions(id) ON DELETE CASCADE,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+    );
+  `);
+
+  dbInstance.run(`
+    CREATE TABLE IF NOT EXISTS store_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_key TEXT UNIQUE NOT NULL,
+      store_name TEXT NOT NULL,
+      address TEXT,
+      front_desk_channel_type TEXT DEFAULT 'wecom',
+      front_desk_channel_config TEXT,
+      dm_channel_type TEXT DEFAULT 'wecom',
+      dm_channel_config TEXT,
+      customer_channel_type TEXT DEFAULT 'sms',
+      customer_channel_config TEXT,
+      manager_phone TEXT,
+      manager_name TEXT,
+      default_assignee TEXT,
+      exception_deadline_minutes INTEGER DEFAULT 60,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
 
@@ -103,6 +181,40 @@ const initDatabase = async () => {
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_notifications_scheduled_time ON notifications(scheduled_time)`);
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exceptions_order_id ON exceptions(order_id)`);
   dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exceptions_status ON exceptions(status)`);
+  dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exceptions_deadline ON exceptions(deadline)`);
+  dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exception_handlers_exception_id ON exception_handlers(exception_id)`);
+  dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_exception_handlers_order_id ON exception_handlers(order_id)`);
+  dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_store_configs_store_key ON store_configs(store_key)`);
+
+  const defaultConfig = dbInstance.exec("SELECT COUNT(*) as c FROM store_configs WHERE store_key = 'default'");
+  if (!defaultConfig || !defaultConfig.length || !defaultConfig[0].values || !defaultConfig[0].values.length || defaultConfig[0].values[0][0] === 0) {
+    const dayjs = require('dayjs');
+    const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    const frontDeskConfig = JSON.stringify({ webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=FRONT-DESK-KEY-EXAMPLE' });
+    const dmConfig = JSON.stringify({ webhook_url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=DM-KEY-EXAMPLE' });
+    const customerConfig = JSON.stringify({ mock: true, gateway: 'sms_gateway_example', sign: '【XX剧本杀】' });
+    const stmt = dbInstance.prepare(`
+      INSERT INTO store_configs (
+        store_key, store_name, address,
+        front_desk_channel_type, front_desk_channel_config,
+        dm_channel_type, dm_channel_config,
+        customer_channel_type, customer_channel_config,
+        manager_phone, manager_name, default_assignee, exception_deadline_minutes,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.bind([
+      'default', '旗舰店示例', 'XX市XX区XX路XX号3层',
+      'wecom', frontDeskConfig,
+      'wecom', dmConfig,
+      'sms', customerConfig,
+      '13800000000', '店长老刘', '前台小王', 60,
+      now, now
+    ]);
+    stmt.step();
+    stmt.free();
+    console.log('[数据库] 已插入默认门店配置');
+  }
 
   saveDatabase();
   console.log('[数据库] 初始化完成');
