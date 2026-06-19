@@ -70,7 +70,7 @@ module.exports = {
     const finalAssignee = assignee || StoreConfigModel.getDefaultAssignee(orderStoreKey);
     const finalDeadlineMinutes = deadline_minutes
       ? Number(deadline_minutes)
-      : (EXCEPTION_DEADLINE_MAP[type] || StoreConfigModel.getDeadlineMinutes(orderStoreKey));
+      : StoreConfigModel.getDeadlineMinutes(orderStoreKey);
     const deadline = dayjs().add(finalDeadlineMinutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
     try {
       const exception = ExceptionModel.create({

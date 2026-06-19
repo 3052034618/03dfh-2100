@@ -61,6 +61,12 @@ module.exports = {
     const order = OrderModel.getById(notification.order_id);
     const storeKey = order ? order.store_key : 'default';
     const channelInfo = StoreConfigModel.getChannelForRole(notification.role, storeKey);
+    // 注入 force_fail / force_fail_reason（用于测试或人工验证失败流程）
+    const sendConfig = { ...(channelInfo.config || {}) };
+    if (req.body && req.body.force_fail) sendConfig.force_fail = true;
+    if (req.body && req.body.force_fail_reason) sendConfig.force_fail_reason = req.body.force_fail_reason;
+    // 标记强制失败：写入通知表，后续自动重试时也保持失败
+    if (sendConfig.force_fail) NotificationModel.update(id, { force_fail: 1 });
     let target = notification.channel_target || channelInfo.target;
     if (notification.role === '顾客' && order) target = order.main_player_phone || target;
     if (notification.role === '前台' && order) target = order.front_desk_contact + (order.front_desk_phone ? `(${order.front_desk_phone})` : '');
@@ -72,7 +78,7 @@ module.exports = {
     console.log('-'.repeat(70));
     let sendResult;
     try {
-      sendResult = await ChannelSender.send(channelInfo.type, channelInfo.config, notification.content, target, order);
+      sendResult = await ChannelSender.send(channelInfo.type, sendConfig, notification.content, target, order);
     } catch (err) {
       sendResult = {
         success: false,
@@ -90,7 +96,7 @@ module.exports = {
       'manual'
     );
     if (!sendResult.success) {
-      const retryConfig = StoreConfigModel.getRetryConfig(storeKey);
+      const retryConfig = StoreConfigModel.getRetryConfigByChannel(storeKey, channelInfo.type);
       const notif = NotificationModel.getById(id);
       if ((notif.auto_retry_count || 0) < retryConfig.max_retries) {
         const nextRetryAt = dayjs().add(retryConfig.retry_interval_minutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
@@ -119,6 +125,12 @@ module.exports = {
     const order = OrderModel.getById(notification.order_id);
     const storeKey = order ? order.store_key : 'default';
     const channelInfo = StoreConfigModel.getChannelForRole(notification.role, storeKey);
+    // 注入 force_fail / force_fail_reason（用于测试或人工验证失败流程）
+    const sendConfig = { ...(channelInfo.config || {}) };
+    if (req.body && req.body.force_fail) sendConfig.force_fail = true;
+    if (req.body && req.body.force_fail_reason) sendConfig.force_fail_reason = req.body.force_fail_reason;
+    // 标记强制失败：写入通知表，后续自动重试时也保持失败
+    if (sendConfig.force_fail) NotificationModel.update(id, { force_fail: 1 });
     let target = notification.channel_target || channelInfo.target;
     if (notification.role === '顾客' && order) target = order.main_player_phone || target;
     if (notification.role === '前台' && order) target = order.front_desk_contact + (order.front_desk_phone ? `(${order.front_desk_phone})` : '');
@@ -131,7 +143,7 @@ module.exports = {
     console.log('-'.repeat(70));
     let sendResult;
     try {
-      sendResult = await ChannelSender.send(channelInfo.type, channelInfo.config, notification.content, target, order);
+      sendResult = await ChannelSender.send(channelInfo.type, sendConfig, notification.content, target, order);
     } catch (err) {
       sendResult = {
         success: false,
@@ -149,7 +161,7 @@ module.exports = {
       'manual'
     );
     if (!sendResult.success) {
-      const retryConfig = StoreConfigModel.getRetryConfig(storeKey);
+      const retryConfig = StoreConfigModel.getRetryConfigByChannel(storeKey, channelInfo.type);
       const notif = NotificationModel.getById(id);
       if ((notif.auto_retry_count || 0) < retryConfig.max_retries) {
         const nextRetryAt = dayjs().add(retryConfig.retry_interval_minutes, 'minute').format('YYYY-MM-DD HH:mm:ss');

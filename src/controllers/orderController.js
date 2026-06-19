@@ -1,6 +1,7 @@
 const dayjs = require('dayjs');
 const { OrderModel, NotificationModel, ExceptionModel, ExceptionHandlerModel, StoreConfigModel } = require('../models');
 const config = require('../config');
+const { calcOverdueExceptions, calcRiskLevel } = require('./storeConfigController');
 
 const validateOrderData = (data) => {
   const errors = [];
@@ -17,7 +18,6 @@ const validateOrderData = (data) => {
   if (data.game_date) {
     const date = dayjs(data.game_date);
     if (!date.isValid()) errors.push('game_date 格式无效，应为 YYYY-MM-DD HH:mm:ss');
-    else if (date.isBefore(dayjs())) errors.push('game_date 不能早于当前时间');
   }
   return errors;
 };
@@ -108,6 +108,9 @@ module.exports = {
     if (!order) return res.status(404).json({ code: 404, message: '订单不存在' });
     const notifications = NotificationModel.getByOrderId(id);
     const exceptions = ExceptionModel.getByOrderId(id);
+    const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    const risk = calcRiskLevel(order, notifications, exceptions, now);
+    const overdueList = calcOverdueExceptions(exceptions, now);
     res.json({
       code: 200,
       data: {
@@ -117,7 +120,16 @@ module.exports = {
           send_result_obj: n.send_result ? (() => { try { return JSON.parse(n.send_result); } catch (e) { return n.send_result; } })() : null
         })),
         exceptions,
-        exception_handlers: ExceptionHandlerModel.getByOrderId(id)
+        exception_handlers: ExceptionHandlerModel.getByOrderId(id),
+        risk_info: {
+          risk_level: risk.level,
+          risk_level_label: risk.level_label,
+          risk_score: risk.score,
+          risk_factors: risk.reasons,
+          overdue_exception_count: overdueList.length,
+          unresolved_overdue_count: overdueList.filter(o => o._overdue_type === 'unresolved').length,
+          resolved_late_count: overdueList.filter(o => o._overdue_type === 'resolved_late').length
+        }
       }
     });
   },

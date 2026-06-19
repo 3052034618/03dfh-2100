@@ -132,7 +132,31 @@ const StoreConfigModel = {
     const cfg = this.getByKey(storeKey);
     const defaults = { max_retries: 3, retry_interval_minutes: 5, escalate_on_max_retries: true };
     if (!cfg || !cfg.retry_config) return defaults;
-    return { ...defaults, ...cfg.retry_config };
+    const rc = cfg.retry_config;
+    if (rc && typeof rc === 'object' && rc.max_retries !== undefined) {
+      return { ...defaults, ...rc };
+    }
+    return defaults;
+  },
+
+  getRetryConfigByChannel(storeKey = 'default', channelType = 'sms') {
+    const cfg = this.getByKey(storeKey);
+    const channelDefaults = {
+      sms: { max_retries: 3, retry_interval_minutes: 5, escalate_on_max_retries: true },
+      wecom: { max_retries: 2, retry_interval_minutes: 3, escalate_on_max_retries: false },
+      dingtalk: { max_retries: 2, retry_interval_minutes: 3, escalate_on_max_retries: false },
+      console: { max_retries: 1, retry_interval_minutes: 1, escalate_on_max_retries: false }
+    };
+    const defaults = channelDefaults[channelType] || channelDefaults.sms;
+    if (!cfg || !cfg.retry_config) return defaults;
+    const rc = cfg.retry_config;
+    if (rc && typeof rc === 'object' && rc[channelType]) {
+      return { ...defaults, ...rc[channelType] };
+    }
+    if (rc && typeof rc === 'object' && rc.max_retries !== undefined) {
+      return { ...defaults, ...rc };
+    }
+    return defaults;
   }
 };
 
@@ -435,7 +459,7 @@ const NotificationModel = {
     const allowedFields = [
       'status', 'sent_time', 'read_at', 'confirmed', 'confirmed_at',
       'channel', 'channel_target', 'send_result', 'last_error',
-      'auto_retry_count', 'next_retry_at'
+      'auto_retry_count', 'next_retry_at', 'force_fail'
     ];
     for (const field of allowedFields) {
       if (data[field] !== undefined) {

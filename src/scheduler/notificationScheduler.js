@@ -23,6 +23,13 @@ class NotificationScheduler {
     }
     const timestamp = dayjs().format('YYYY-MM-DD HH:mm:ss');
     const triggerLabel = triggerType === 'auto' ? '自动重试' : (triggerType === 'escalation_retry' ? '升级重试' : '推送通知');
+    // 注入 force_fail（用于测试：手动 force_fail 过的通知在后续自动重试时也保持失败）
+    const sendConfig = { ...(channelInfo.config || {}) };
+    if (notification && notification.force_fail) {
+      sendConfig.force_fail = true;
+      if (notification.last_error) sendConfig.force_fail_reason = notification.last_error;
+    }
+    console.log(`[DEBUG dispatch] notif.id=${notification?.id}, force_fail=${notification?.force_fail}, sendConfig.force_fail=${sendConfig?.force_fail}, triggerType=${triggerType}`);
     console.log('\n' + '='.repeat(70));
     console.log(`[${triggerLabel}] ${timestamp}`);
     console.log(`  门店: ${storeKey} | 订单号: ${notification.order_no} | 通知ID: ${notification.id}`);
@@ -34,7 +41,7 @@ class NotificationScheduler {
     try {
       sendResult = await ChannelSender.send(
         channelInfo.type,
-        channelInfo.config,
+        sendConfig,
         notification.content,
         target,
         order
@@ -60,19 +67,20 @@ class NotificationScheduler {
     );
 
     if (!sendResult.success && triggerType !== 'escalation_retry') {
-      const retryConfig = StoreConfigModel.getRetryConfig(storeKey);
+      const retryConfig = StoreConfigModel.getRetryConfigByChannel(storeKey, channelInfo.type);
       const currentAutoRetry = (notification.auto_retry_count || 0) + (triggerType === 'auto' ? 1 : 0);
+      console.log(`[DEBUG escalate] notif.id=${notification?.id}, role=${notification?.role}, channel=${channelInfo.type}, store=${storeKey}, currentAutoRetry=${currentAutoRetry}, max=${retryConfig?.max_retries}, escalate=${retryConfig?.escalate_on_max_retries}`);
       if (currentAutoRetry < retryConfig.max_retries) {
         const nextRetryAt = dayjs().add(retryConfig.retry_interval_minutes, 'minute').format('YYYY-MM-DD HH:mm:ss');
         NotificationModel.update(notification.id, { next_retry_at: nextRetryAt });
-        console.log(`  ⏳ 自动重试计划: 第 ${currentAutoRetry + 1}/${retryConfig.max_retries} 次，${nextRetryAt} 执行`);
+        console.log(`  ⏳ 自动重试计划(${channelInfo.type}): 第 ${currentAutoRetry + 1}/${retryConfig.max_retries} 次，${nextRetryAt} 执行`);
       } else if (retryConfig.escalate_on_max_retries) {
         NotificationModel.update(notification.id, { next_retry_at: null });
-        console.log(`  🚨 已达最大自动重试次数 (${retryConfig.max_retries})，升级至店长`);
+        console.log(`  🚨 已达最大自动重试次数 (${retryConfig.max_retries}，渠道 ${channelInfo.type})，升级至店长`);
         this._escalateFailedNotification(notification, order, storeKey);
       } else {
         NotificationModel.update(notification.id, { next_retry_at: null });
-        console.log(`  ⛔ 已达最大自动重试次数 (${retryConfig.max_retries})，不再重试`);
+        console.log(`  ⛔ 已达最大自动重试次数 (${retryConfig.max_retries}，渠道 ${channelInfo.type})，不再重试`);
       }
     }
 

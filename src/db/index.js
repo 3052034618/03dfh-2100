@@ -137,6 +137,7 @@ const initDatabase = async () => {
 
   addColumnIfNotExists('notifications', 'auto_retry_count INTEGER DEFAULT 0');
   addColumnIfNotExists('notifications', 'next_retry_at TEXT');
+  addColumnIfNotExists('notifications', 'force_fail INTEGER DEFAULT 0');
 
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS exceptions (

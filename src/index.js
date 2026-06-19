@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
   res.json({
     code: 200,
     message: '剧本杀生日包场通知服务',
-    version: '2.2.0',
+    version: '2.3.0',
     endpoints: {
       orders: '/api/orders',
       notifications: '/api/notifications',
@@ -33,13 +33,14 @@ app.get('/', (req, res) => {
       store_configs: {
         'GET    /api/store-configs': '门店配置列表',
         'GET    /api/store-configs/:key': '查询门店配置',
-        'POST   /api/store-configs': '新增门店配置（支持 retry_config 重试策略）',
-        'PUT    /api/store-configs/:key': '更新门店配置（渠道、负责人、时限、重试策略）',
+        'POST   /api/store-configs': '新增门店配置（支持按渠道分开配置 retry_config:{sms,wecom,dingtalk,console}）',
+        'PUT    /api/store-configs/:key': '更新门店配置（渠道、负责人、时限、按渠道重试策略）',
         'DELETE /api/store-configs/:key': '删除门店配置',
         'GET    /api/store-configs/channels': '支持的通知渠道列表',
         'GET    /api/store-configs/:key/preview?role=前台|DM|顾客|店长': '预览某角色的渠道配置',
         'GET    /api/store-configs/:key/dashboard?date=YYYY-MM-DD': '门店当日运营看板（严格按门店+日期隔离）',
-        'GET    /api/store-configs/:key/daily-report?date=YYYY-MM-DD': '店长复盘日报（触达/确认耗时/异常耗时/风险订单）'
+        'GET    /api/store-configs/:key/daily-report?date=YYYY-MM-DD': '店长复盘日报（触达/确认耗时/异常耗时/风险等级/已处理但超时）',
+        'GET    /api/store-configs/:key/weekly-trend?end_date=YYYY-MM-DD': '门店近7天趋势（订单/触达/耗时/波动分析）'
       },
       orders: {
         'POST   /api/orders': '创建生日包场订单（支持 store_key，自动按门店渠道生成3条提醒）',
@@ -80,10 +81,31 @@ app.post('/api/_debug/trigger-escalation', async (req, res) => {
     res.json({
       code: 200,
       message: '手动触发调度扫描完成',
-      result: result || { info: 'tick executed' }
+      data: result || { info: 'tick executed' }
     });
   } catch (err) {
     res.status(500).json({ code: 500, message: '扫描失败：' + err.message });
+  }
+});
+
+app.post('/api/_debug/reset-all-data', async (req, res) => {
+  const { run, all, get } = require('./db');
+  try {
+    run('DELETE FROM exception_handlers');
+    run('DELETE FROM exceptions');
+    run('DELETE FROM notification_send_logs');
+    run('DELETE FROM notifications');
+    run('DELETE FROM orders');
+    const counts = {
+      orders: get('SELECT COUNT(*) as c FROM orders').c,
+      notifications: get('SELECT COUNT(*) as c FROM notifications').c,
+      exceptions: get('SELECT COUNT(*) as c FROM exceptions').c,
+      send_logs: get('SELECT COUNT(*) as c FROM notification_send_logs').c,
+      handlers: get('SELECT COUNT(*) as c FROM exception_handlers').c,
+    };
+    res.json({ code: 200, message: '所有业务数据已清空', data: counts });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '清空失败：' + err.message });
   }
 });
 
@@ -105,19 +127,20 @@ const startServer = async () => {
   await initDatabase();
   app.listen(config.port, () => {
     console.log('\n' + '='.repeat(65));
-    console.log('  剧本杀商家生日包场通知服务 v2.2');
+    console.log('  剧本杀商家生日包场通知服务 v2.3');
     console.log(`  服务地址: http://localhost:${config.port}`);
     console.log(`  API 文档: http://localhost:${config.port}/`);
     console.log('='.repeat(65));
     console.log('  核心能力:');
-    console.log('    • 多门店通知渠道配置（企业微信/短信/钉钉）+ 重试策略');
+    console.log('    • 多门店通知渠道配置 + 按渠道分别重试策略');
     console.log('    • 订单创建自动匹配渠道生成3个节点提醒');
-    console.log('    • 通知发送失败自动重试 + 达上限升级店长');
-    console.log('    • 异常自动分配负责人 + 按订单门店走时限');
-    console.log('    • 异常超时自动升级至店长（生成升级提醒）');
+    console.log('    • 通知发送失败自动重试(按渠道策略) + 达上限升级店长');
+    console.log('    • 异常完全按订单门店分配负责人和时限');
+    console.log('    • 异常超时自动升级 + 超时统计含已处理但晚了');
     console.log('    • 门店运营看板（严格门店+日期隔离）');
-    console.log('    • 店长复盘日报（触达率/确认耗时/异常耗时/风险订单）');
-    console.log('    • 时间线区分自动重试/手动重试');
+    console.log('    • 店长复盘日报（风险等级分级/高风险优先）');
+    console.log('    • 近7天趋势看板（订单/触达/耗时/波动分析）');
+    console.log('    • 订单详情风险信息 + 时间线自动/手动区分');
     console.log('='.repeat(65) + '\n');
     notificationScheduler.start();
   });
